@@ -1,0 +1,355 @@
+"""Builds the WAPK forecast map data from ECMWF IFS open data (0.25°, CC-BY-4.0).
+
+Downloads the latest IFS run for the next 48 hours (3-hourly steps), crops the WAPK region, and writes
+one small binary file per field and step plus `latest.json` describing them. The output folder is
+published as a static Cloudflare Pages site that the Maps view reads directly.
+
+Each value is stored as one byte (0–254, 255 = missing). Linear fields decode as offset + code × scale;
+"sqrt" fields (rain, CAPE) decode as (code × scale)², which keeps detail at the low end.
+
+Usage: python build_forecast.py --out <folder> [--steps 0,3,6] [--published-url <latest.json URL>]
+
+With --published-url, the build is skipped when that site already has the newest ECMWF run. In GitHub
+Actions the result is written to $GITHUB_OUTPUT as `changed=true|false` so the deploy step can be skipped.
+"""
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import shutil
+import sys
+import tempfile
+import time
+import urllib.request
+
+import eccodes
+import numpy as np
+from ecmwf.opendata import Client
+
+REGION = {"north": 55.0, "south": 0.0, "west": 25.0, "east": 110.0}
+STEPS = list(range(0, 49, 3))
+# Pressure levels offered for wind and temperature (925 hPa is the nearest ECMWF level to 900 hPa).
+LEVELS = [925, 850, 700, 500, 250]
+# Temperature and height at these levels give the freezing level (ECMWF's own field is not open data).
+FREEZING_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300]
+SURFACE_PARAMS = ["2t", "2d", "tp", "sf", "sd", "rsn", "10u", "10v", "msl", "tcc", "lcc", "mcc", "hcc", "10fg", "mucape", "ssrd", "tcwv", "ptype", "tprate"]
+MISSING = 255
+# Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
+# browsers never mix files cached under the old format (run files are cached as immutable for a year),
+# and the scheduled build republishes even when ECMWF's run itself has not changed.
+FORMAT_VERSION = 5
+
+WIND = {"encoding": "linear", "offset": -100.0, "scale": 200 / 254, "unit": "m/s"}
+TEMPERATURE = {"encoding": "linear", "offset": -80.0, "scale": 130 / 254, "unit": "°C"}
+PERCENT = {"encoding": "linear", "offset": 0.0, "scale": 100 / 254, "unit": "%"}
+FIELDS = {
+    "temp": TEMPERATURE,
+    "freezing": {"encoding": "linear", "offset": 0.0, "scale": 7000 / 254, "unit": "m"},
+    "precip": {"encoding": "sqrt", "scale": math.sqrt(100) / 254, "unit": "mm/h"},
+    "gust": {"encoding": "linear", "offset": 0.0, "scale": 80 / 254, "unit": "m/s"},
+    "dew": TEMPERATURE,
+    "rh": PERCENT,
+    "rainacc": {"encoding": "sqrt", "scale": math.sqrt(500) / 254, "unit": "mm"},
+    "snowacc": {"encoding": "sqrt", "scale": math.sqrt(300) / 254, "unit": "cm"},
+    "snowdepth": {"encoding": "sqrt", "scale": math.sqrt(1000) / 254, "unit": "cm"},
+    "tcwv": {"encoding": "linear", "offset": 0.0, "scale": 80 / 254, "unit": "mm"},
+    # Precipitation type as an ordered category: see PRECIP_TYPES.
+    "ptype": {"encoding": "linear", "offset": 0.0, "scale": 1.0, "unit": "category"},
+    "solar": {"encoding": "linear", "offset": 0.0, "scale": 1200 / 254, "unit": "W/m²"},
+    "cloud": PERCENT,
+    "lowcloud": PERCENT,
+    "midcloud": PERCENT,
+    "highcloud": PERCENT,
+    "pressure": {"encoding": "linear", "offset": 940.0, "scale": 120 / 254, "unit": "hPa"},
+    "cape": {"encoding": "sqrt", "scale": math.sqrt(8000) / 254, "unit": "J/kg"},
+    "u10": WIND,
+    "v10": WIND,
+    **{f"{component}{level}": WIND for level in LEVELS for component in ("u", "v")},
+    **{f"t{level}": TEMPERATURE for level in LEVELS},
+    **{f"r{level}": PERCENT for level in LEVELS},
+}
+
+
+def encode(values, spec):
+    """Packs a float array into bytes using the field's scale; NaN becomes MISSING."""
+    if spec["encoding"] == "sqrt":
+        codes = np.sqrt(np.clip(values, 0, None)) / spec["scale"]
+    else:
+        codes = (values - spec["offset"]) / spec["scale"]
+    packed = np.clip(np.rint(codes), 0, 254)
+    packed[np.isnan(values)] = MISSING
+    return packed.astype(np.uint8)
+
+
+def freezing_level(temperatures, heights, surface_temperature):
+    """Height in metres of the 0 °C level, from temperatures (K) and geopotential heights (m) at
+    FREEZING_LEVELS, ordered from the lowest level up, plus the 2 m temperature (K).
+
+    Where temperature crosses 0 °C more than once (e.g. a cold valley under warmer air), the highest
+    crossing is used, as on Windy. Wherever it is already freezing at 2 m the result is 0, meaning
+    "at the ground": over high terrain such as Tibet the lowest pressure levels are below the surface,
+    and their model-extrapolated values would otherwise put the freezing level underground.
+    """
+    result = np.full(temperatures[0].shape, np.nan, dtype=np.float32)
+    for lower in reversed(range(len(temperatures) - 1)):
+        warm = temperatures[lower] - 273.15
+        cold = temperatures[lower + 1] - 273.15
+        crosses = (warm > 0) & (cold <= 0) & np.isnan(result)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fraction = warm / (warm - cold)
+        height = heights[lower] + fraction * (heights[lower + 1] - heights[lower])
+        result = np.where(crosses, height, result)
+    result = np.where(np.isnan(result) & (temperatures[0] - 273.15 <= 0), 0, result)
+    result = np.where(surface_temperature - 273.15 <= 0, 0, result)
+    return np.clip(result, 0, None)
+
+
+# ECMWF ptype codes → the map's categories: 1 rain, 2 rain and snow mixed (incl. wet snow), 3 snow,
+# 4 freezing rain, freezing drizzle or ice pellets. 0 means no precipitation.
+PRECIP_TYPES = {1: 1, 6: 2, 7: 2, 5: 3, 3: 4, 8: 4, 12: 4}
+
+
+def precip_category(ptype):
+    result = np.zeros(ptype.shape, dtype=np.float32)
+    for code, category in PRECIP_TYPES.items():
+        result[np.rint(ptype) == code] = category
+    result[np.isnan(ptype)] = np.nan
+    return result
+
+
+def relative_humidity(temperature, dew_point):
+    """Relative humidity in % from 2 m temperature and dew point in kelvin (Magnus formula, over water)."""
+    t = temperature - 273.15
+    d = dew_point - 273.15
+    return np.clip(100 * np.exp(17.625 * d / (243.04 + d) - 17.625 * t / (243.04 + t)), 0, 100)
+
+
+def snow_depth(water_equivalent, density):
+    """Snow depth in cm from snow water equivalent (m) and snow density (kg/m³)."""
+    density = np.where(np.isnan(density) | (density < 50), 300, density)
+    return water_equivalent * 1000 / density * 100
+
+
+def crop_window(gid):
+    """Row and column slices of the global grid that cover REGION, plus the grid shape."""
+    ni = eccodes.codes_get(gid, "Ni")
+    nj = eccodes.codes_get(gid, "Nj")
+    lat0 = eccodes.codes_get(gid, "latitudeOfFirstGridPointInDegrees")
+    lon0 = eccodes.codes_get(gid, "longitudeOfFirstGridPointInDegrees")
+    di = eccodes.codes_get(gid, "iDirectionIncrementInDegrees")
+    dj = eccodes.codes_get(gid, "jDirectionIncrementInDegrees")
+    if eccodes.codes_get(gid, "jScansPositively") or eccodes.codes_get(gid, "iScansNegatively"):
+        raise ValueError("Unexpected grid scanning order")
+    row0 = round((lat0 - REGION["north"]) / dj)
+    row1 = round((lat0 - REGION["south"]) / dj)
+    col0 = round(((REGION["west"] - lon0) % 360) / di)
+    col1 = round(((REGION["east"] - lon0) % 360) / di)
+    if col1 < col0 or row0 < 0 or row1 >= nj:
+        raise ValueError("Region crosses the grid edge")
+    return (slice(row0, row1 + 1), slice(col0, col1 + 1)), (nj, ni), di
+
+
+def read_messages(path):
+    """Yields (shortName, level, step, cropped values) for every GRIB message in a file."""
+    with open(path, "rb") as handle:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(handle)
+            if gid is None:
+                break
+            try:
+                window, shape, resolution = crop_window(gid)
+                # 32-bit floats halve memory; a full build holds about 900 cropped grids.
+                values = eccodes.codes_get_values(gid).reshape(shape)[window].astype(np.float32)
+                missing = eccodes.codes_get(gid, "missingValue")
+                values[values == missing] = np.nan
+                yield (
+                    eccodes.codes_get(gid, "shortName"),
+                    eccodes.codes_get(gid, "level"),
+                    int(eccodes.codes_get(gid, "endStep")),
+                    values,
+                    resolution,
+                )
+            finally:
+                eccodes.codes_release(gid)
+
+
+def retrieve(client, run, steps, target, **request):
+    """Downloads with a few retries; the ECMWF portal limits concurrent connections."""
+    for attempt in range(4):
+        try:
+            client.retrieve(date=run, type="fc", step=steps, target=target, **request)
+            return
+        except Exception as error:  # noqa: BLE001 - retried, then re-raised
+            if attempt == 3:
+                raise
+            print(f"retrying after: {error}", file=sys.stderr)
+            time.sleep(20 * (attempt + 1))
+
+
+def published_run(url):
+    """The runId currently published at `url`, or None when it cannot be read."""
+    # Cloudflare refuses Python's default "Python-urllib" User-Agent, so name the pipeline instead.
+    request = urllib.request.Request(url, headers={"User-Agent": "WAPK-forecast-pipeline/1.0", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response).get("runId")
+    except Exception as error:  # noqa: BLE001 - an unreadable site just means "build anyway"
+        print(f"Could not read the published forecast ({error}); building anyway.", flush=True)
+        return None
+
+
+def set_output(name, value):
+    """Passes a value to later GitHub Actions steps; does nothing elsewhere."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{name}={value}\n")
+
+
+def build(out, steps, published_url=None):
+    client = Client(source="ecmwf", model="ifs", resol="0p25")
+    run = client.latest(type="fc", step=max(steps), param="2t")
+    run_id = f"{run:%Y%m%d%H}-v{FORMAT_VERSION}"
+    print(f"ECMWF IFS run {run:%Y-%m-%d %H}Z, steps {steps}", flush=True)
+    if published_url and published_run(published_url) == run_id:
+        print("That run is already published; nothing to do.", flush=True)
+        set_output("changed", "false")
+        return None
+
+    grids = {}
+    resolution = None
+    with tempfile.TemporaryDirectory() as work:
+        surface = os.path.join(work, "surface.grib2")
+        levels = os.path.join(work, "levels.grib2")
+        profile = os.path.join(work, "profile.grib2")
+        retrieve(client, run, steps, surface, param=SURFACE_PARAMS)
+        retrieve(client, run, steps, levels, param=["u", "v", "t", "r"], levelist=LEVELS)
+        retrieve(client, run, steps, profile, param=["t", "gh"], levelist=FREEZING_LEVELS)
+        for path in (surface, levels, profile):
+            for name, level, step, values, resolution in read_messages(path):
+                grids[(name, 0 if path == surface else level, step)] = values
+
+    sample = next(iter(grids.values()))
+    ny, nx = sample.shape
+    out_run = os.path.join(out, "runs", run_id)
+    if os.path.exists(out):
+        # Only ever replace a folder this script produced, never an arbitrary directory passed by mistake.
+        if os.listdir(out) and not os.path.exists(os.path.join(out, "latest.json")):
+            raise SystemExit(f"Refusing to replace {out}: it is not empty and has no latest.json")
+        shutil.rmtree(out)
+
+    def write(field, index, values):
+        folder = os.path.join(out_run, field)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, f"{index}.bin"), "wb") as handle:
+            handle.write(encode(values, FIELDS[field]).tobytes())
+
+    empty = np.full((ny, nx), np.nan)
+
+    def first_available(name):
+        """Fields that cover the period before each step (gusts, radiation) have nothing at step 0."""
+        return next((grids[(name, 0, later)] for later in steps if (name, 0, later) in grids and later), empty)
+
+    for index, step in enumerate(steps):
+        get = lambda name, level=0: grids.get((name, level, step), empty)  # noqa: E731
+        write("temp", index, get("2t") - 273.15)
+        # Total precipitation is accumulated since the run started; the map shows the rate over the last step.
+        previous = steps[index - 1] if index else None
+        if previous is None:
+            rate = np.zeros((ny, nx))
+        else:
+            rate = (get("tp") - grids.get(("tp", 0, previous), empty)) * 1000 / (step - previous)
+        write("precip", index, np.clip(rate, 0, None))
+        # Gusts are a maximum over the preceding period, so the run's first step has none; use the next one.
+        gust = get("10fg")
+        if np.isnan(gust).all():
+            gust = first_available("10fg")
+        write("gust", index, gust)
+        # Rain and snowfall totals since the run started (snow as fresh snow, about 1 cm per mm of water).
+        write("rainacc", index, np.clip(get("tp") * 1000, 0, None) if step else np.zeros((ny, nx)))
+        write("snowacc", index, np.clip(get("sf") * 1000, 0, None) if step else np.zeros((ny, nx)))
+        write("snowdepth", index, np.clip(snow_depth(get("sd"), get("rsn")), 0, None))
+        # Downward solar radiation is accumulated too: the mean over the last step, in W/m².
+        if previous is None:
+            later = next((s for s in steps if s), None)
+            solar = first_available("ssrd") / (later * 3600) if later else empty
+        else:
+            solar = (get("ssrd") - grids.get(("ssrd", 0, previous), empty)) / ((step - previous) * 3600)
+        write("solar", index, np.clip(solar, 0, None))
+        write("dew", index, get("2d") - 273.15)
+        write("tcwv", index, get("tcwv"))
+        # ECMWF gives a type even for trace amounts; show it only where at least 0.1 mm/h is falling.
+        write("ptype", index, np.where(get("tprate") * 3600 >= 0.1, precip_category(get("ptype")), 0))
+        write("rh", index, relative_humidity(get("2t"), get("2d")))
+        write("cloud", index, get("tcc") * 100)
+        write("lowcloud", index, get("lcc") * 100)
+        write("midcloud", index, get("mcc") * 100)
+        write("highcloud", index, get("hcc") * 100)
+        write("pressure", index, get("msl") / 100)
+        write("cape", index, get("mucape"))
+        write("u10", index, get("10u"))
+        write("v10", index, get("10v"))
+        for level in LEVELS:
+            write(f"u{level}", index, get("u", level))
+            write(f"v{level}", index, get("v", level))
+            write(f"t{level}", index, get("t", level) - 273.15)
+            write(f"r{level}", index, np.clip(get("r", level), 0, 100))
+        write("freezing", index, freezing_level([get("t", level) for level in FREEZING_LEVELS], [get("gh", level) for level in FREEZING_LEVELS], get("2t")))
+
+    meta = {
+        "source": "ECMWF IFS open data",
+        "model": "IFS 0.25°",
+        "license": "CC-BY-4.0",
+        "attribution": "Contains modified Copernicus/ECMWF open data. © ECMWF, CC-BY-4.0.",
+        "run": run.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "runId": run_id,
+        "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "grid": {"north": REGION["north"], "west": REGION["west"], "step": resolution, "nx": nx, "ny": ny},
+        "times": [int((run.replace(tzinfo=dt.timezone.utc) + dt.timedelta(hours=step)).timestamp()) for step in steps],
+        "missing": MISSING,
+        "fields": FIELDS,
+        "path": f"runs/{run_id}/{{field}}/{{step}}.bin",
+    }
+    with open(os.path.join(out, "latest.json"), "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, ensure_ascii=False, separators=(",", ":"))
+    # Cloudflare Pages headers: any site may read the data; run files never change, latest.json often does.
+    # Run files are labelled text/plain only because Cloudflare compresses that type (75 KB → about 40 KB);
+    # the bytes are unchanged and the map reads them as raw binary.
+    with open(os.path.join(out, "_headers"), "w", encoding="utf-8") as handle:
+        handle.write(
+            "/*\n  Access-Control-Allow-Origin: *\n"
+            "/latest.json\n  Cache-Control: public, max-age=300\n"
+            "/runs/*\n  Cache-Control: public, max-age=31536000, immutable\n"
+            "  Content-Type: text/plain; charset=x-user-defined\n"
+        )
+    with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as handle:
+        handle.write(
+            "<!doctype html><meta charset=utf-8><title>WAPK forecast data</title>"
+            f"<p>Forecast map data for WAPK — Weather Alert PK. Run {run:%Y-%m-%d %H}Z.</p>"
+            f"<p>{meta['attribution']}</p>"
+        )
+    # Without a 404 page, Cloudflare Pages answers unknown paths with index.html and status 200. The map
+    # needs a real 404 for files of a replaced run, so it knows to reload latest.json.
+    with open(os.path.join(out, "404.html"), "w", encoding="utf-8") as handle:
+        handle.write("<!doctype html><meta charset=utf-8><title>Not found</title><p>Not found.</p>")
+    files = sum(len(names) for _, _, names in os.walk(out_run))
+    print(f"Wrote {files} files, grid {nx}x{ny} at {resolution} deg to {out}", flush=True)
+    set_output("changed", "true")
+    set_output("run", run_id)
+    return meta
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", required=True, help="Output folder (replaced)")
+    parser.add_argument("--steps", help="Comma-separated forecast hours, default 0–48 every 3 h")
+    parser.add_argument("--published-url", help="latest.json of the live site; skip the build if it already has this run")
+    args = parser.parse_args()
+    steps = [int(step) for step in args.steps.split(",")] if args.steps else STEPS
+    build(os.path.abspath(args.out), steps, args.published_url)
+
+
+if __name__ == "__main__":
+    main()

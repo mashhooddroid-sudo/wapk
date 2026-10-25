@@ -1,0 +1,13 @@
+# Local tooling output: screenshots, test scripts and the old hosting project id stay private.
+.openai/
+atmos-weather/
+test.txt
+
+# Forecast pipeline output and Python caches
+forecast-out/
+__pycache__/
+*.pyc
+.venv/
+
+# Wrangler cache
+.wrangler/

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050d20">
+  <script>
+    try { const saved = JSON.parse(localStorage.getItem('atmos.preferences.v1') || '{}'); document.documentElement.dataset.theme = saved?.theme === 'light' ? 'light' : 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+  </script>
+  <meta name="description" content="WAPK (Weather Alert PK): live weather, airport observations, PMD radar and lightning alerts for Pakistan, plus hourly forecasts, air quality and the week ahead.">
+  <title>WAPK — Weather Alert PK</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%232d8ef0'/%3E%3Cpath d='M11 26h18a6 6 0 0 0-3-11 8 8 0 0 0-15 3 4 4 0 0 0 0 8' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20261021-4">
+  <link rel="stylesheet" href="radar.css?v=20261025-34">
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true">
+    <div class="ambient-orb orb-one"></div><div class="ambient-orb orb-two"></div><div class="ambient-orb orb-three"></div>
+    <svg class="ambient-waves" viewBox="0 0 1440 1000" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="ambientRibbon" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1a6be2" stop-opacity="0"/><stop offset=".52" stop-color="#45b7f7" stop-opacity=".5"/><stop offset="1" stop-color="#1680e8" stop-opacity="0"/></linearGradient></defs><path d="M-300 870C160 980 310 160 780 320S1210 1030 1690 220" fill="none" stroke="url(#ambientRibbon)" stroke-width="170"/><path d="M-300 790C160 900 310 80 780 240S1210 950 1690 140" fill="none" stroke="#8bd4ff" stroke-opacity=".13" stroke-width="1"/><path d="M-300 950C160 1060 310 240 780 400S1210 1110 1690 300" fill="none" stroke="#6ac5ff" stroke-opacity=".12" stroke-width="1"/></svg>
+    <div class="ambient-grain"></div>
+  </div>
+  <div id="cursorGlow" aria-hidden="true"></div>
+  <canvas id="cursorTrail" aria-hidden="true"></canvas>
+  <a class="skip-link" href="#overview">Skip to weather</a>
+  <aside id="savedPlaces" class="sidebar" aria-label="Navigation and saved places">
+    <a class="brand" href="#overview"><span class="brand-mark" data-icon="cloud"></span>WAPK<span class="brand-dot">.</span></a>
+    <div class="sidebar-heading">WEATHER ALERT PK</div>
+    <nav class="nav-links">
+      <a class="nav-link active" href="#overview"><span data-icon="grid"></span>Overview<span class="nav-indicator"></span></a>
+      <a class="nav-link" href="#hourlySection"><span data-icon="clock"></span>Hourly forecast</a>
+      <a class="nav-link" href="#weekSection"><span data-icon="calendar"></span>This week</a>
+      <a class="nav-link" href="#mapsView"><span data-icon="map"></span>Maps<span class="nav-indicator"></span></a>
+    </nav>
+    <div class="saved-heading"><h2>Saved places</h2><span data-icon="bookmark"></span></div>
+    <div id="savedCities" class="saved-cities"></div>
+    <p id="emptySaved" class="empty-saved">Your favorite skies, all in one place. Save a city to keep it here.</p>
+    <div class="sidebar-note">
+      <div class="mini-sun" aria-hidden="true"></div>
+      <p>A little clarity<br>for your day.</p>
+      <span>Whatever the weather brings.</span>
+      <svg class="note-hills" viewBox="0 0 200 80" preserveAspectRatio="none" aria-hidden="true"><path d="M0 60Q45 5 110 43T200 25V80H0Z" fill="#418ac8" fill-opacity=".32"/><path d="M0 75Q60 35 120 57T200 42V80H0Z" fill="#59beed" fill-opacity=".25"/></svg>
+    </div>
+    <div class="sidebar-bottom"><span class="status-dot"></span>Made for everyday explorers</div>
+  </aside>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="mobile-brand" href="#overview" aria-label="WAPK, Weather Alert PK"><span data-icon="cloud"></span>WAPK.</a>
+      <form id="searchForm" class="search" role="search" autocomplete="off">
+        <span class="search-icon" data-icon="search"></span>
+        <input id="cityInput" type="search" placeholder="Explore a city…" aria-label="Search for a city" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="results" autocomplete="off" spellcheck="false">
+        <kbd aria-hidden="true">Ctrl K</kbd>
+        <div class="search-popover"><div id="results" class="results" role="listbox" aria-label="Matching cities" hidden></div><p id="searchMessage" class="search-message" role="status" aria-live="polite"></p></div>
+      </form>
+      <div class="toolbar-actions">
+        <button id="locationButton" class="location-button" type="button"><span data-icon="location"></span><span id="locationLabel">Current location</span></button>
+        <div id="unitControls" class="unit-controls" role="group" aria-label="Temperature units"><button type="button" data-unit="C" aria-pressed="true">°C</button><button type="button" data-unit="F" aria-pressed="false">°F</button></div>
+        <button id="themeButton" class="icon-button theme-button" type="button" aria-label="Switch to light theme" title="Change theme"><span id="themeIcon" data-icon="sun"></span></button>
+      </div>
+      <nav class="mobile-nav" aria-label="Weather sections"><a href="#overview">Overview</a><a href="#hourlySection">Hourly</a><a href="#weekSection">This week</a><a href="#mapsView">Maps</a><a href="#savedPlaces">Saved places</a></nav>
+    </header>
+
+    <main id="overview" class="main-content">
+      <div class="page-heading">
+        <div><p class="eyebrow">A LITTLE CLARITY FOR YOUR DAY</p><h1 id="placeName">Islamabad</h1><p class="place-meta"><span data-icon="pin"></span><span id="placeRegion">Pakistan</span><span class="meta-divider">/</span><span id="dateLine">Finding your forecast…</span></p></div>
+        <button id="saveButton" class="save-button" type="button" aria-pressed="false"><span data-icon="bookmark"></span><span id="saveLabel">Save city</span></button>
+      </div>
+      <div id="statusBanner" class="status-banner" role="status" aria-live="polite" hidden><span id="statusText"></span><button id="retryButton" type="button">Try again<span data-icon="refresh"></span></button></div>
+
+      <div id="weatherContent" aria-busy="true">
+        <div class="forecast-grid">
+          <div class="forecast-primary">
+            <section class="current-card" aria-labelledby="currentHeading">
+              <svg class="landscape" viewBox="0 0 900 360" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="heroRibbon" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#5ed4ff" stop-opacity=".02"/><stop offset=".5" stop-color="#5daeff" stop-opacity=".34"/><stop offset="1" stop-color="#1959b9" stop-opacity=".02"/></linearGradient></defs><path d="M290 410C500 320 470 150 660 190S780 410 1010 240" stroke="url(#heroRibbon)" stroke-width="110" fill="none"/><path d="M290 355C500 265 470 95 660 135S780 355 1010 185" stroke="#98ddff" stroke-opacity=".24" stroke-width="1.1" fill="none"/><path d="M290 465C500 375 470 205 660 245S780 465 1010 295" stroke="#60acff" stroke-opacity=".19" stroke-width="1" fill="none"/></svg>
+              <div class="hero-lens" aria-hidden="true"></div>
+              <div class="current-heading"><h2 id="currentHeading"><span class="status-dot"></span>Current weather</h2><span class="current-pill" id="timezoneLabel">Local time</span></div>
+              <div class="current-body"><div class="current-reading"><div class="temperature" id="temperature">—</div><p id="condition">Loading your forecast…</p><p class="feels">Feels like <span id="feelsLike">—</span><span class="feels-separator">·</span><span id="highLow">High — / Low —</span></p><p id="currentSource" class="current-source"></p></div><div id="heroArt" class="hero-art" aria-hidden="true"></div></div>
+              <p id="heroInsight" class="hero-insight">A fresh outlook is on its way.</p>
+              <div class="current-bottom"><div><span data-icon="droplet"></span>Precipitation <strong id="rainValue">—</strong></div><div><span data-icon="wind"></span>Pressure <strong id="pressureValue">—</strong></div></div>
+            </section>
+
+            <section id="hourlySection" class="card hourly-card" aria-labelledby="hourlyHeading">
+              <div class="section-heading"><div><h2 id="hourlyHeading">The next 24 hours</h2><p id="chartCaption">Your day, hour by hour</p></div><div id="chartTabs" class="chart-tabs" role="group" aria-label="Chart metric"><button type="button" data-metric="temperature" aria-pressed="true">Temperature</button><button type="button" data-metric="rain" aria-pressed="false">Rain</button></div></div>
+              <div class="chart-wrap"><svg id="chart" viewBox="0 0 760 130" width="760" height="130" role="img" aria-label="Hourly forecast chart"></svg></div>
+              <div id="hourly" class="hourly-scroll" tabindex="0" aria-label="Hourly forecast; scroll horizontally for more hours"><p class="empty-state">Loading hourly outlook…</p></div>
+              <p class="scroll-hint">Scroll to explore the full day <span data-icon="chevron-right"></span></p>
+            </section>
+          </div>
+
+          <section id="weekSection" class="card week-card" aria-labelledby="weekHeading">
+            <div class="section-heading"><div><h2 id="weekHeading">The week ahead</h2><p>A little planning goes a long way.</p></div><span class="section-icon" data-icon="calendar"></span></div>
+            <div class="week-labels"><span>DAY</span><span>CHANCE OF RAIN</span><span>LOW / HIGH</span></div>
+            <div id="week" class="week-list"><p class="empty-state">Loading seven-day outlook…</p></div>
+            <div id="dayDetails" class="day-details" aria-live="polite"><span data-icon="sun"></span><p>Select a day for a closer look.</p></div>
+            <p class="week-note">Tap any day to explore the details.</p>
+          </section>
+        </div>
+
+        <div class="highlights-heading"><h2>Today’s highlights</h2><span>The details that make a difference</span></div>
+        <section class="highlights-grid" aria-label="Today's weather details">
+          <article class="card highlight wind-card"><h3><span data-icon="wind"></span>Wind status</h3><div class="wind-reading"><div><p id="windValue" class="metric">—</p><p id="windDescription" class="metric-note">Waiting for wind data</p></div><div class="compass" aria-hidden="true"><span class="north">N</span><span class="east">E</span><span class="south">S</span><span class="west">W</span><div id="compassNeedle" class="compass-needle"></div><i></i></div></div></article>
+          <article class="card highlight"><h3><span data-icon="sun"></span>UV index</h3><p id="uvValue" class="metric">—</p><div class="meter uv-meter"><span id="uvMeter"></span></div><p id="uvDescription" class="metric-note">Current UV exposure</p></article>
+          <article class="card highlight"><h3><span data-icon="droplet"></span>Humidity</h3><p id="humidityValue" class="metric">—</p><div class="meter humidity-meter"><span id="humidityMeter"></span></div><p id="humidityDescription" class="metric-note">Relative humidity and dew point</p></article>
+          <article class="card highlight sun-card"><h3><span data-icon="sunrise"></span>Sunrise & sunset</h3><div class="sun-arc" aria-hidden="true"><svg viewBox="0 0 240 74"><path d="M20 66A100 100 0 0 1 200 0" fill="none" opacity="0"/><path d="M20 66Q120-48 220 66" fill="none" stroke="currentColor" stroke-dasharray="4 5" stroke-width="1.5"/><path d="M12 66H228" stroke="currentColor" stroke-opacity=".3"/><circle id="sunProgress" cx="120" cy="9" r="7" fill="#edb24f" stroke="#fff2ca" stroke-width="5"/></svg></div><div class="sun-times"><div><span>Sunrise</span><strong id="sunriseValue">—</strong></div><div><span>Sunset</span><strong id="sunsetValue">—</strong></div></div><p id="daylightValue" class="metric-note">Daylight duration</p></article>
+          <article class="card highlight"><h3><span data-icon="eye"></span>Visibility</h3><p id="visibilityValue" class="metric">—</p><div class="visibility-lines" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><p id="visibilityDescription" class="metric-note">How far you can see</p></article>
+          <article class="card highlight air-card"><h3><span data-icon="leaf"></span>Air quality</h3><p id="airValue" class="metric">—</p><div class="meter air-meter"><span id="airMeter"></span></div><p id="airDescription" class="metric-note">US air quality index</p></article>
+        </section>
+
+        <section id="metarSection" class="card metar-card" aria-labelledby="metarHeading">
+          <div class="section-heading"><div><h2 id="metarHeading">Airport observation</h2><p>The latest METAR report from the nearest airport.</p></div><span id="metarCategory" class="flight-category" hidden></span></div>
+          <div id="metarBody" class="metar-body" aria-live="polite"><p class="empty-state">Finding the nearest airport report…</p></div>
+        </section>
+      </div>
+      <footer class="footer"><p><span class="status-dot"></span><span id="lastUpdated">Connecting to forecast data</span><button id="refreshButton" type="button" aria-label="Refresh weather" title="Refresh weather"><span data-icon="refresh"></span></button></p><p>Forecasts by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a><span class="footer-dot">·</span>Air quality by CAMS<span class="footer-dot">·</span>Airport METAR via Travel Weather API<span class="footer-dot">·</span>Made with a little sunshine.</p></footer>
+    </main>
+    <section id="mapsView" class="main-content radar-view" role="main" aria-labelledby="mapsHeading" hidden>
+      <div class="page-heading radar-page-heading">
+        <div><p class="eyebrow">WEATHER IN MOTION</p><h1 id="mapsHeading" tabindex="-1">Weather map<span class="radar-country">Pakistan &amp; region</span></h1><p class="radar-intro">ECMWF forecast, PMD radar and live lightning.</p></div>
+        <a class="radar-button radar-back" href="#overview"><span data-icon="chevron-left"></span>Back to weather</a>
+      </div>
+      <p id="radarViewStatus" class="radar-view-status" role="status" hidden></p>
+
+      <section id="radarMapStage" class="map-stage" aria-label="Interactive weather map">
+        <div id="radarMap" class="radar-map" role="region" aria-label="Weather map. Use arrow keys to pan and plus or minus to zoom." tabindex="0"></div>
+
+        <div class="map-corner map-corner-left">
+          <button id="mapPanelButton" class="map-chip" type="button" aria-expanded="false" aria-controls="mapPanel"><span data-icon="sliders"></span><span>Settings</span></button>
+          <button id="radarFullscreenButton" class="map-chip map-chip-icon" type="button" aria-label="Enter fullscreen map"><span data-icon="fullscreen"></span><span id="radarFullscreenLabel" class="radar-sr-only">Fullscreen</span></button>
+        </div>
+
+        <nav class="map-rail" aria-label="Map layers">
+          <button id="radarForecastToggle" class="rail-item rail-master" type="button" aria-pressed="true"><span data-icon="layers"></span><span>Forecast</span></button>
+          <div id="radarForecastLayers" class="rail-group" role="group" aria-label="Forecast colour layer"><!-- Built by forecast.js from its layer categories. --></div>
+          <div class="rail-group" aria-label="Wind particles">
+            <label class="rail-item rail-check"><input id="radarForecastWind" type="checkbox" checked><span data-icon="wind"></span><span>Particles</span></label>
+            <label class="rail-select"><span class="radar-sr-only">Height for wind, temperature and humidity</span><select id="radarForecastLevel" aria-label="Height for wind, temperature and humidity" title="Height for wind, temperature and humidity"><option value="10" selected>Surface</option><option value="925">925 hPa · 800 m</option><option value="850">850 hPa · 1.5 km</option><option value="700">700 hPa · 3 km</option><option value="500">500 hPa · 5.5 km</option><option value="250">250 hPa · 10 km</option></select></label>
+          </div>
+          <div class="rail-group" aria-label="Observations">
+            <button id="radarStrikesToggle" class="rail-item" type="button" aria-pressed="true"><span data-icon="bolt"></span><span id="radarStrikesLabel">Lightning</span></button>
+            <label class="rail-item rail-check"><input id="radarPmdToggle" type="checkbox" checked><span data-icon="radar"></span><span>Radar</span></label>
+            <label class="rail-item rail-check"><input id="radarSatelliteToggle" type="checkbox"><span data-icon="satellite"></span><span>Satellite</span></label>
+            <label class="rail-select"><span class="radar-sr-only">Satellite image</span><select id="radarSatelliteProduct" aria-label="Satellite image"><option value="ir108" selected>Infrared</option><option value="vis006">Visible</option><option value="wv062">Water vapour</option><option value="natural">Natural colour</option><option value="airmass">Airmass</option><option value="dust">Dust</option><option value="convection">Convection</option><option value="rain">Rain rate</option></select></label>
+          </div>
+        </nav>
+
+        <div id="radarForecastLegend" class="map-legend" hidden></div>
+
+        <div id="radarForecastBar" class="map-timeline">
+          <button id="radarForecastPlay" class="timeline-play" type="button" aria-label="Play forecast"><span data-icon="play"></span></button>
+          <div class="timeline-track">
+            <div id="radarForecastTicks" class="timeline-ticks" aria-hidden="true"></div>
+            <input id="radarForecastSlider" type="range" min="0" max="48" value="0" step="1" aria-label="Forecast time">
+            <output id="radarForecastTime" class="timeline-bubble" for="radarForecastSlider">—</output>
+          </div>
+        </div>
+
+        <aside id="mapPanel" class="map-panel" aria-label="Map settings" hidden>
+          <div class="map-panel-head"><h2>Map settings</h2><button id="mapPanelClose" class="map-chip map-chip-icon" type="button" aria-label="Close settings"><span data-icon="close"></span></button></div>
+          <details class="radar-control-group" open><summary>Location &amp; radius<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <p id="radarTargetSummary" class="radar-hint">Your dashboard city is the starting point. Search or choose a place below.</p>
+            <form id="radarSearchForm" class="radar-search" role="search"><label class="radar-sr-only" for="radarSearchInput">Find a map location or latitude, longitude</label><input id="radarSearchInput" type="search" placeholder="Place or lat, lon" autocomplete="off"><button class="radar-button" type="submit" aria-label="Find map location"><span data-icon="search"></span></button></form>
+            <div id="radarSearchResults" class="radar-search-results" aria-live="polite"></div>
+            <button id="radarLocateButton" class="radar-button radar-wide-button" type="button"><span data-icon="location"></span>Use my current location</button>
+            <div class="radar-field-heading"><label for="radarRadiusInput">Monitor radius</label><strong><span id="radarRadiusValue">25</span> km</strong></div><input id="radarRadiusInput" type="range" min="5" max="100" step="5" value="25"><div class="radar-range-labels" aria-hidden="true"><span>5 km</span><span>100 km</span></div>
+          </div></details>
+          <details class="radar-control-group"><summary>Lightning &amp; base map<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <label class="radar-field-label" for="radarTimeFilter">Strike age at checkpoint</label><select id="radarTimeFilter"><option value="5">Last 5 minutes</option><option value="15" selected>Last 15 minutes</option><option value="60">Last 1 hour</option><option value="180">Last 3 hours</option><option value="360">Last 6 hours</option><option value="720">Last 12 hours</option><option value="1440">Last 24 hours</option><option value="all">All cached strikes</option></select>
+            <label class="radar-field-label" for="radarMapTheme">Base map</label><select id="radarMapTheme"><option value="auto" selected>Match website theme</option><option value="dark">Dark contrast</option><option value="standard">Street map</option><option value="hot">Humanitarian</option></select>
+          </div></details>
+          <details class="radar-control-group"><summary>PMD radar<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <label class="radar-field-label" for="radarPmdProduct">Radar product</label><select id="radarPmdProduct"><option value="sri" selected>Surface rain rate · every 10 min</option><option value="cappi01">Rain rate at 1 km · every 10 min</option><option value="rain12">Rainfall, last 12 hours</option></select>
+            <p id="radarPmdStatus" class="radar-hint" aria-live="polite">Radar from PMD Islamabad and Karachi.</p>
+            <img id="radarPmdLegend" class="radar-pmd-legend" alt="" hidden>
+          </div></details>
+          <details class="radar-control-group"><summary>Satellite<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <p id="radarWeatherLayerStatus" class="radar-hint" aria-live="polite">Satellite images are off. Turn on Satellite in the layer list.</p>
+            <label class="radar-field-label" for="radarWeatherOpacityInput">Radar and satellite opacity</label><input id="radarWeatherOpacityInput" type="range" min="20" max="100" step="5" value="70">
+            <p class="radar-hint">Meteosat images from EUMETSAT, updated every 15 minutes. Visible, Natural colour and Convection need daylight.</p>
+          </div></details>
+          <details class="radar-control-group"><summary>Updates &amp; alerts<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <label class="radar-switch"><input id="radarAutoRefreshToggle" type="checkbox" checked><span>Refresh lightning every 15 minutes</span></label><label class="radar-switch"><input id="radarSoundToggle" type="checkbox"><span>Sound for nearby strikes</span></label><button id="radarNotificationButton" class="radar-button radar-wide-button" type="button">Enable browser alerts</button><p class="radar-hint">Updates and monitoring pause when you leave Maps.</p>
+          </div></details>
+          <details class="radar-control-group"><summary>About the forecast<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
+            <p id="radarForecastStatus" class="radar-hint" aria-live="polite">Loading forecast…</p>
+          </div></details>
+        </aside>
+      </section>
+
+      <section class="lightning-section" aria-labelledby="radarMapHeadline">
+        <div class="lightning-heading">
+          <div><p class="eyebrow">LIVE LIGHTNING</p><h2 id="radarMapHeadline">Your lightning outlook</h2><p id="radarMapSubline">Preparing the map and the latest available strikes.</p></div>
+          <div class="radar-connection">
+            <div class="radar-connection-copy" role="status"><span class="live-dot warning" aria-hidden="true"></span><span id="radarConnectionStatus">Ready to connect</span></div>
+            <div class="radar-connection-actions"><span id="radarLastUpdated">Not refreshed yet</span><button id="radarRefreshButton" class="radar-button" type="button"><span data-icon="refresh"></span>Refresh</button></div>
+          </div>
+        </div>
+        <div class="radar-metrics" aria-label="Lightning statistics">
+          <article class="card radar-stat"><span><span data-icon="bolt"></span>Cached strikes · 24h</span><strong id="radarTotalStrikes">—</strong></article>
+          <article class="card radar-stat"><span><span data-icon="eye"></span>Selected time window</span><strong id="radarVisibleStrikes">—</strong></article>
+          <article class="card radar-stat"><span><span data-icon="location"></span>Within your radius</span><strong id="radarNearbyStrikes">—</strong></article>
+          <article class="card radar-stat"><span><span data-icon="pin"></span>Nearest in radius</span><strong id="radarNearestStrike">—</strong></article>
+        </div>
+        <div class="radar-legend" aria-label="Strike age legend"><span><i class="legend-dot fresh"></i>0–5 min</span><span><i class="legend-dot recent"></i>5–15 min</span><span><i class="legend-dot older"></i>Older</span><span><i class="legend-ring"></i>Monitor radius</span></div>
+        <div class="lightning-grid">
+          <section class="card radar-timeline" aria-labelledby="radarTimelineHeading">
+            <div class="radar-section-heading"><div><p class="eyebrow">LOOK BACK IN TIME</p><h2 id="radarTimelineHeading">Lightning timeline</h2></div><div class="radar-timeline-ranges" role="group" aria-label="Timeline playback range"><button class="active" type="button" data-timeline-hours="24" aria-pressed="true">24h</button><button type="button" data-timeline-hours="12" aria-pressed="false">12h</button><button type="button" data-timeline-hours="6" aria-pressed="false">6h</button><button type="button" data-timeline-hours="1" aria-pressed="false">1h</button></div></div>
+            <div id="radarTimelineBars" class="timeline-bars" aria-label="Lightning activity by checkpoint"></div>
+            <div class="radar-timeline-controls"><button id="radarTimelinePlayButton" class="radar-button radar-primary-button" type="button" aria-label="Play timeline">Play</button><input id="radarTimelineSlider" type="range" min="0" max="95" value="95" step="1" aria-label="Timeline checkpoint"><button id="radarLatestTimelineButton" class="radar-button" type="button">Latest</button></div>
+            <div class="radar-timeline-meta"><strong id="radarTimelineLabel">Latest</strong><span id="radarTimelineRangeLabel">Last 24 hours · 15 minute steps</span></div><p id="radarTimelineWindow" class="radar-hint">Previous 15 minutes ending at the latest available checkpoint.</p>
+          </section>
+          <div class="card radar-insight-card"><p class="eyebrow">YOUR MONITORED AREA</p><section id="radarAlertCard" class="alert-card" aria-live="polite"><h2 id="radarAlertTitle">Waiting for strike data</h2><p id="radarAlertText">Choose a place to see strikes within your monitoring radius.</p></section><p class="radar-safety-note">Coverage and updates can be delayed. This map is not an official warning service.</p></div>
+          <section class="card radar-insight-card" aria-labelledby="radarNearbyHeading"><div class="radar-section-heading"><h2 id="radarNearbyHeading">Nearby strikes</h2><button id="radarClearAlertsButton" class="radar-button radar-small-button" type="button">Acknowledge</button></div><div id="radarAlertList" class="radar-feed-list"><p class="empty-state">Nearby strikes will appear here.</p></div></section>
+          <section class="card radar-insight-card" aria-labelledby="radarFeedHeading"><div class="radar-section-heading"><h2 id="radarFeedHeading">Latest feed</h2><span class="radar-feed-tag">PK</span></div><div id="radarFeedList" class="radar-feed-list"><p class="empty-state">Waiting for the lightning feed.</p></div></section>
+        </div>
+      </section>
+      <footer class="radar-footer"><div><span id="radarFeedDate">Feed date: —</span><span id="radarNewestStrike">Newest strike: —</span></div><p id="radarTimezoneNote">Strike times: Pakistan Standard Time (UTC+05)</p><p class="radar-credit">Forecast: Contains modified Copernicus/ECMWF open data, © ECMWF (CC-BY-4.0).</p><a href="https://lightning-weatherx.pages.dev/pk/" target="_blank" rel="noopener noreferrer">Lightning Weather X<span data-icon="arrow-up-right"></span></a></footer>
+      <div id="radarToastStack" class="radar-toast-stack" aria-live="polite" aria-atomic="false"></div>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="icons.js?v=20261025-33"></script>
+  <script src="app.js?v=20261022-1"></script>
+  <script src="forecast.js?v=20261025-34"></script>
+  <script src="radar.js?v=20261025-21"></script>
+  <script src="views.js?v=20261025-10"></script>
+  <script src="effects.js?v=glass-1"></script>
+</body>
+</html>
