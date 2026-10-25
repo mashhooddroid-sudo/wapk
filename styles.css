@@ -586,3 +586,13 @@ h1, h2, h3 { font-family: Manrope, sans-serif; }
 .current-source { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11px; color: #a9c8e6; min-height: 16px; }
 .current-source.is-live { color: #d5ecff; }
 .current-source.is-live::before { content: ''; width: 6px; height: 6px; flex: none; border-radius: 50%; background: #5fe0a0; box-shadow: 0 0 8px #5fe0a0aa; }
+
+/* Thunderstorm intensity and hail chips (rules in weather-logic.js). */
+.hour-icon, .day-icon { position: relative; }
+.hail-dot { position: absolute; right: -6px; bottom: -3px; padding: 1px 4px; border-radius: 6px; background: #3a6ea5; color: #fff; font-size: 8.5px; font-weight: 700; line-height: 1.3; letter-spacing: .02em; box-shadow: 0 1px 3px #0005; }
+.storm-chip { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: #fff; background: #b3561d; }
+.storm-chip--light { background: #8a7a2a; }
+.storm-chip--moderate { background: #b3561d; }
+.storm-chip--strong { background: #c0392b; }
+.storm-chip--severe { background: #7b1f6e; }
+.storm-chip--hail { background: #3a6ea5; }

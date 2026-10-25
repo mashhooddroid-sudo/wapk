@@ -11,12 +11,13 @@
   const cityKey = (city) => `${city.latitude.toFixed(3)},${city.longitude.toFixed(3)}`;
   const weatherNames = {
     0: 'Clear skies', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Overcast',
-    45: 'Foggy', 48: 'Freezing fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+    44: 'Mist', 45: 'Fog', 46: 'Dense fog', 47: 'Very dense fog', 48: 'Freezing fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
     56: 'Freezing drizzle', 57: 'Heavy freezing drizzle', 61: 'Light rain', 63: 'Rain',
     65: 'Heavy rain', 66: 'Freezing rain', 67: 'Heavy freezing rain', 71: 'Light snow',
     73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains', 80: 'Light showers',
     81: 'Rain showers', 82: 'Heavy showers', 85: 'Snow showers', 86: 'Heavy snow showers',
-    95: 'Thunderstorms', 96: 'Thunderstorms with hail', 99: 'Thunderstorms with hail'
+    // Storm tiers by rain amount (see weather-logic.js); hail is a separate flag. 97 is internal.
+    95: 'Isolated thunderstorm', 96: 'Scattered thunderstorms', 97: 'Thunderstorms', 99: 'Heavy thunderstorms'
   };
   const condition = (code) => weatherNames[code] || 'Conditions unavailable';
   const icon = (code, isDay = true) => window.AtmosIcons?.weather(code, isDay) || '';
@@ -238,17 +239,32 @@
     text('condition', 'Loading your forecast\u2026'); text('heroInsight', `Getting the latest outlook for ${selected.name}.`);
     text('lastUpdated', 'Connecting to forecast data');
     loadMetar(selected, requestId);
+    // ECMWF IFS (as in the Weather & Prayer Alert PK app, whose storm and hail rules are fitted to it), plus the
+    // fields ECMWF does not provide from Open-Meteo's default model: rain probability, visibility, UV and the
+    // freezing level, 500 hPa temperature and wind and lifted index the storm and hail rules need.
+    const place = { latitude: String(selected.latitude), longitude: String(selected.longitude), timezone: 'auto', forecast_days: '7' };
     const parameters = new URLSearchParams({
-      latitude: String(selected.latitude), longitude: String(selected.longitude), timezone: 'auto', forecast_days: '7',
-      current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure',
-      hourly: 'temperature_2m,precipitation_probability,weather_code,visibility,dew_point_2m,uv_index,wind_speed_10m,is_day',
-      daily: 'temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset,uv_index_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max'
+      ...place, models: 'ecmwf_ifs',
+      current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure',
+      hourly: 'temperature_2m,precipitation,weather_code,cloud_cover,cape,dew_point_2m,wind_speed_10m,is_day',
+      daily: 'temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset,precipitation_sum,wind_speed_10m_max'
+    });
+    const auxParameters = new URLSearchParams({
+      ...place,
+      hourly: 'precipitation_probability,visibility,uv_index,freezing_level_height,temperature_500hPa,lifted_index,wind_speed_500hPa',
+      daily: 'uv_index_max,precipitation_probability_max'
     });
     try {
-      const payload = await requestJSON(`https://api.open-meteo.com/v1/forecast?${parameters}`, controller);
+      const [payload, aux] = await Promise.all([
+        requestJSON(`https://api.open-meteo.com/v1/forecast?${parameters}`, controller),
+        // The forecast still shows without these; storms then rely on rain amount alone.
+        requestJSON(`https://api.open-meteo.com/v1/forecast?${auxParameters}`, controller).catch(() => null)
+      ]);
       if (requestId !== state.forecastId) return;
       if (!payload.current || !Array.isArray(payload.hourly?.time) || !payload.hourly.time.length || !Array.isArray(payload.daily?.time) || !payload.daily.time.length) throw new Error('The forecast response was incomplete.');
+      mergeByTime(payload.hourly, aux?.hourly); mergeByTime(payload.daily, aux?.daily);
       state.weather = payload; state.fetchedAt = new Date();
+      state.weather.wapk = window.WapkWeatherLogic?.classifyForecast(payload, currentHourIndex()) || null;
       savePreferences(); renderWeather();
       loadAirQuality(selected, requestId);
     } catch (error) {
@@ -264,6 +280,26 @@
     } finally { if (requestId === state.forecastId) setLoading(false); }
   }
 
+  // Copies another response's series onto `target`, matched by time (both use the same timezone).
+  function mergeByTime(target, extra) {
+    if (!target || !Array.isArray(extra?.time)) return;
+    const position = new Map(extra.time.map((time, index) => [time, index]));
+    Object.entries(extra).forEach(([field, values]) => {
+      if (field === 'time' || !Array.isArray(values)) return;
+      target[field] = target.time.map((time) => (position.has(time) ? values[position.get(time)] : null));
+    });
+  }
+  // Classified weather code (storm tiers, hail, fog) for an hour or day, falling back to the model's own.
+  function hourCode(index) { return state.weather.wapk?.hours[index]?.code ?? state.weather.hourly.weather_code?.[index]; }
+  function dayInfo(index) { return state.weather.wapk?.days[index] || null; }
+  function dayCode(index) { return dayInfo(index)?.code ?? state.weather.daily.weather_code?.[index]; }
+  const INTENSITY = { light: 'Light', moderate: 'Moderate', strong: 'Strong', severe: 'Severe' };
+  function stormBadges(info) {
+    const badges = [];
+    if (info?.intensity) badges.push(element('span', `storm-chip storm-chip--${info.intensity}`, INTENSITY[info.intensity]));
+    if (info?.hail) badges.push(element('span', 'storm-chip storm-chip--hail', 'Hail'));
+    return badges;
+  }
   function currentHourIndex() {
     const times = state.weather.hourly.time;
     const currentTime = state.weather.current.time;
@@ -286,7 +322,9 @@
     const high = dailyValue('temperature_2m_max');
     const low = dailyValue('temperature_2m_min');
     const summary = conditions.condition === 'Clear night' ? 'Clear skies' : conditions.condition;
+    if (conditions.hail) return 'Thunderstorms with possible hail around. Keep an eye on local weather advisories.';
     if (conditions.weatherCode >= 95) return 'Thunderstorms around. Keep an eye on local weather advisories.';
+    if (dayInfo(0)?.hail) return `${summary} now, but thunderstorms with possible hail are expected later today.`;
     if (finite(chance) && chance >= 50) return `Rain may be part of your plans: up to ${Math.round(chance)}% chance in the next 6 hours.`;
     if (finite(high) && finite(low)) return `${summary} ${conditions.isDay ? 'today' : 'tonight'}, with a high of ${temperature(high)} and a low of ${temperature(low)}. ${chance === 0 ? 'No rain forecast in the next 6 hours.' : 'Your next 24 hours are just below.'}`;
     return `${summary}. Explore the hourly outlook for the day ahead.`;
@@ -327,12 +365,15 @@
       const index = start + offset;
       const row = element('div', `hour-item${offset === 0 ? ' is-current' : ''}`);
       const art = element('span', 'hour-icon');
-      if (finite(hours.weather_code?.[index])) art.innerHTML = icon(hours.weather_code[index], Boolean(hours.is_day?.[index]));
+      const code = hourCode(index);
+      const info = state.weather.wapk?.hours[index];
+      if (finite(code)) art.innerHTML = icon(code, Boolean(hours.is_day?.[index]));
       art.setAttribute('aria-hidden', 'true');
+      if (info?.hail) art.append(element('span', 'hail-dot', 'Hail'));
       row.append(element('span', 'hour-label', offset === 0 ? 'Now' : hourLabel(time)), art,
         element('strong', 'hour-temp', temperature(hours.temperature_2m?.[index])),
         element('span', 'hour-rain', number(hours.precipitation_probability?.[index], '%')));
-      row.title = `${timeLabel(time)}: ${condition(hours.weather_code?.[index])}, ${temperature(hours.temperature_2m?.[index])}, ${number(hours.precipitation_probability?.[index], '%')} chance of rain`;
+      row.title = `${timeLabel(time)}: ${condition(code)}${info?.hail ? ', hail possible' : ''}, ${temperature(hours.temperature_2m?.[index])}, ${number(hours.precipitation_probability?.[index], '%')} chance of rain`;
       row.setAttribute('role', 'group');
       row.setAttribute('aria-label', row.title);
       fragment.append(row);
@@ -407,8 +448,10 @@
       row.type = 'button'; row.dataset.day = index;
       row.setAttribute('aria-pressed', String(index === state.selectedDay)); row.setAttribute('aria-controls', 'dayDetails');
       const art = element('span', 'day-icon');
-      if (finite(daily.weather_code?.[index])) art.innerHTML = icon(daily.weather_code[index]);
+      const code = dayCode(index);
+      if (finite(code)) art.innerHTML = icon(code);
       art.setAttribute('aria-hidden', 'true');
+      if (dayInfo(index)?.hail) art.append(element('span', 'hail-dot', 'Hail'));
       const range = element('span', 'day-range'); range.setAttribute('aria-hidden', 'true');
       const fill = element('span', 'day-range-fill');
       if (finite(low) && finite(high)) { fill.style.left = `${clamp((low - minimum) / spread * 100, 0, 96)}%`; fill.style.width = `${Math.max(4, (high - low) / spread * 100)}%`; }
@@ -417,7 +460,7 @@
       row.append(element('span', 'day-name', dayLabel(time, index)), art,
         element('span', 'day-rain', number(daily.precipitation_probability_max?.[index], '%')),
         element('span', 'day-low', temperature(low)), range, element('strong', 'day-high', temperature(high)));
-      row.setAttribute('aria-label', `${dateFormat(time, { weekday: 'long' })}: ${condition(daily.weather_code?.[index])}, low ${temperature(low)}, high ${temperature(high)}. View details.`);
+      row.setAttribute('aria-label', `${dateFormat(time, { weekday: 'long' })}: ${condition(code)}${dayInfo(index)?.hail ? ', hail possible' : ''}, low ${temperature(low)}, high ${temperature(high)}. View details.`);
       fragment.append(row);
     });
     byId('week').replaceChildren(fragment);
@@ -426,7 +469,9 @@
   function renderDayDetails() {
     if (!state.weather) return;
     const index = state.selectedDay;
-    const title = element('p', 'day-detail-title', `${dayLabel(state.weather.daily.time[index], index)} \u00b7 ${condition(dailyValue('weather_code', index))}`);
+    const info = dayInfo(index);
+    const title = element('p', 'day-detail-title', `${dayLabel(state.weather.daily.time[index], index)} \u00b7 ${condition(dayCode(index))}`);
+    title.append(...stormBadges(info));
     const grid = element('div', 'day-detail-grid');
     const entries = [
       ['Rainfall', number(dailyValue('precipitation_sum', index), ' mm', 1)],
@@ -434,6 +479,10 @@
       ['UV max', number(dailyValue('uv_index_max', index), '', 1)],
       ['Sunset', timeLabel(dailyValue('sunset', index))]
     ];
+    if (info?.dayCode !== null && info?.dayCode !== undefined) entries.push(['Day', condition(info.dayCode)]);
+    if (info?.nightCode !== null && info?.nightCode !== undefined) entries.push(['Night', condition(info.nightCode)]);
+    if (info?.intensity) entries.push(['Storm energy', `${INTENSITY[info.intensity]} \u00b7 CAPE ${number(Math.round(info.maxCape))}`]);
+    if (info?.hail) entries.push(['Hail', 'Possible in storms']);
     entries.forEach(([label, value]) => { const stat = element('div', 'day-detail-stat'); stat.append(element('span', '', label), element('strong', '', value)); grid.append(stat); });
     byId('dayDetails').replaceChildren(title, grid);
   }
@@ -645,12 +694,13 @@
   function currentConditions() {
     const model = state.weather.current;
     const conditions = {
-      source: null, temperature: model.temperature_2m, apparent: model.apparent_temperature, weatherCode: model.weather_code,
+      source: null, temperature: model.temperature_2m, apparent: model.apparent_temperature,
+      weatherCode: state.weather.wapk?.current.code ?? model.weather_code, hail: Boolean(state.weather.wapk?.current.hail),
       isDay: Boolean(model.is_day), humidity: model.relative_humidity_2m, dewPoint: hourlyValue('dew_point_2m'),
       windSpeed: model.wind_speed_10m, windDirection: model.wind_direction_10m, windVariable: false, windGusts: model.wind_gusts_10m,
       visibility: hourlyValue('visibility'), visibilityAtLeast: false, pressure: model.surface_pressure
     };
-    conditions.condition = conditions.weatherCode === 0 && !conditions.isDay ? 'Clear night' : condition(conditions.weatherCode);
+    conditions.condition = conditions.weatherCode === 0 && !conditions.isDay ? 'Clear night' : `${condition(conditions.weatherCode)}${conditions.hail ? ' with possible hail' : ''}`;
     const live = liveMetar();
     if (!live) return conditions;
     const { metar } = live;
@@ -668,7 +718,8 @@
       visibility: finite(metar.visibility_km) ? (metar.visibility_km >= 9.6 ? 10000 : metar.visibility_km * 1000) : conditions.visibility,
       visibilityAtLeast: finite(metar.visibility_km) && metar.visibility_km >= 9.6,
       pressure: use(metar.pressure_hpa, conditions.pressure),
-      weatherCode: metarWeatherCode(metar)
+      weatherCode: metarWeatherCode(metar),
+      hail: metarCodes(metar).some((code) => /GR|GS/.test(code))
     });
     conditions.apparent = use(apparentTemperature(conditions.temperature, conditions.humidity, conditions.windSpeed), conditions.apparent);
     conditions.condition = metarCondition(metar, conditions.isDay);

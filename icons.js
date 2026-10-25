@@ -88,7 +88,7 @@
     } else if (value === 1 || value === 2) {
       kind = "partly-cloudy";
       artwork = (daylight ? sun(true) : moon(true)) + cloud();
-    } else if (value === 45 || value === 48) {
+    } else if (value >= 44 && value <= 48) {
       kind = "fog";
       artwork = cloud() + fog;
     } else if ([51, 53, 55, 56, 57].includes(value)) {
@@ -100,9 +100,10 @@
     } else if ([71, 73, 75, 77, 85, 86].includes(value)) {
       kind = "snow";
       artwork = cloud() + snow;
-    } else if ([95, 96, 99].includes(value)) {
+    } else if (value >= 95 && value <= 99) {
+      // Storm tiers 95–99 differ by rain amount (hail is shown separately), so heavier tiers get heavier rain.
       kind = "thunder";
-      artwork = cloud(true) + (value === 95 ? rain() : snow) + bolt;
+      artwork = cloud(true) + rain(value >= 97) + bolt;
     }
 
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" aria-hidden="true" focusable="false" class="weather-icon weather-icon--${kind}">${artwork}</svg>`;
