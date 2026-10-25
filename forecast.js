@@ -220,6 +220,7 @@
     });
     els.play.addEventListener("click", () => (state.playTimer ? stopPlayback() : startPlayback()));
     map.on("click", showPointForecast);
+    map.on("resize", () => state.meta && renderTicks());
     document.addEventListener("atmos:unit", () => {
       renderLegend();
     });
@@ -589,7 +590,9 @@
       const meta = state.meta;
       els.ticks.replaceChildren();
       const percent = (hour) => `${(hour / meta.lastHour) * 100}%`;
-      const dayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", timeZone: API_TIMEZONE });
+      // A week of "28 Wed" labels does not fit a phone-width bar, so narrow bars show just the weekday.
+      const narrow = els.ticks.clientWidth > 0 && els.ticks.clientWidth / (meta.lastHour / 24) < 64;
+      const dayFormat = new Intl.DateTimeFormat(undefined, narrow ? { weekday: "short", timeZone: API_TIMEZONE } : { weekday: "short", day: "numeric", timeZone: API_TIMEZONE });
       const hourFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: API_TIMEZONE });
       for (let hour = 0; hour <= meta.lastHour; hour += 1) {
         const time = new Date((meta.times[0] + hour * 3600) * 1000);
