@@ -1,6 +1,6 @@
 """Builds the WAPK forecast map data from ECMWF IFS open data (0.25°, CC-BY-4.0).
 
-Downloads the latest IFS run for the next 48 hours (3-hourly steps), crops the WAPK region, and writes
+Downloads the latest IFS run for the next 7 days (3-hourly, 6-hourly after 144 h), crops the WAPK region, and writes
 one small binary file per field and step plus `latest.json` describing them. The output folder is
 published as a static Cloudflare Pages site that the Maps view reads directly.
 
@@ -29,7 +29,9 @@ import numpy as np
 from ecmwf.opendata import Client
 
 REGION = {"north": 55.0, "south": 0.0, "west": 25.0, "east": 110.0}
-STEPS = list(range(0, 49, 3))
+# Seven days: ECMWF open data is 3-hourly to 144 h, then 6-hourly. Only the 00Z and 12Z runs reach
+# beyond 90 h, so the forecast updates twice a day.
+STEPS = list(range(0, 145, 3)) + list(range(150, 169, 6))
 # Pressure levels offered for wind and temperature (925 hPa is the nearest ECMWF level to 900 hPa).
 LEVELS = [925, 850, 700, 500, 250]
 # Temperature and height at these levels give the freezing level (ECMWF's own field is not open data).
@@ -39,7 +41,7 @@ MISSING = 255
 # Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
 # browsers never mix files cached under the old format (run files are cached as immutable for a year),
 # and the scheduled build republishes even when ECMWF's run itself has not changed.
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 
 WIND = {"encoding": "linear", "offset": -100.0, "scale": 200 / 254, "unit": "m/s"}
 TEMPERATURE = {"encoding": "linear", "offset": -80.0, "scale": 130 / 254, "unit": "°C"}
@@ -160,7 +162,7 @@ def read_messages(path):
                 break
             try:
                 window, shape, resolution = crop_window(gid)
-                # 32-bit floats halve memory; a full build holds about 900 cropped grids.
+                # 32-bit floats halve memory; a full build holds about 2,800 cropped grids (about 850 MB).
                 values = eccodes.codes_get_values(gid).reshape(shape)[window].astype(np.float32)
                 missing = eccodes.codes_get(gid, "missingValue")
                 values[values == missing] = np.nan
@@ -344,7 +346,7 @@ def build(out, steps, published_url=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="Output folder (replaced)")
-    parser.add_argument("--steps", help="Comma-separated forecast hours, default 0–48 every 3 h")
+    parser.add_argument("--steps", help="Comma-separated forecast hours, default 0–168 (see STEPS)")
     parser.add_argument("--published-url", help="latest.json of the live site; skip the build if it already has this run")
     args = parser.parse_args()
     steps = [int(step) for step in args.steps.split(",")] if args.steps else STEPS

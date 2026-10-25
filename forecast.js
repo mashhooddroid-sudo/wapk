@@ -317,8 +317,9 @@
           state.inflight.clear();
         }
         meta.loadedAt = Date.now();
-        meta.stepHours = (meta.times[1] - meta.times[0]) / 3600;
-        meta.lastHour = (meta.times.length - 1) * meta.stepHours;
+        // Hours of each model step from the first; steps are 3-hourly, then 6-hourly later in the week.
+        meta.offsets = meta.times.map((time) => (time - meta.times[0]) / 3600);
+        meta.lastHour = meta.offsets[meta.offsets.length - 1];
         meta.decoders = Object.fromEntries(Object.entries(meta.fields).map(([name, spec]) => [name, decodeTable(spec, meta.missing)]));
         state.meta = meta;
         els.slider.max = String(meta.lastHour);
@@ -378,10 +379,12 @@
 
     // The two steps either side of the current hour and how far between them it is.
     function bracket() {
-      const position = state.hour / state.meta.stepHours;
-      const first = Math.floor(position);
-      const second = Math.min(first + 1, state.meta.times.length - 1);
-      return { first, second, weight: position - first };
+      const { offsets } = state.meta;
+      let first = 0;
+      while (first < offsets.length - 2 && offsets[first + 1] <= state.hour) first += 1;
+      const second = Math.min(first + 1, offsets.length - 1);
+      const span = offsets[second] - offsets[first];
+      return { first, second, weight: span ? Math.min(1, Math.max(0, (state.hour - offsets[first]) / span)) : 0 };
     }
 
     async function loadFields(fields) {
@@ -517,7 +520,7 @@
       renderLegend();
       renderTime();
       const run = new Date(state.meta.run);
-      setStatus(`${state.meta.source}, ${state.meta.model}. Model run ${formatTime(run.getTime())}, published ${formatTime(Date.parse(state.meta.generatedAt), true)}. Steps are 3-hourly; hours in between are blended. Click the map for values.${layer?.note ? ` ${layer.note}` : ""}`);
+      setStatus(`${state.meta.source}, ${state.meta.model}. Model run ${formatTime(run.getTime())}, published ${formatTime(Date.parse(state.meta.generatedAt), true)}. Steps are 3-hourly (6-hourly after day 6); hours in between are blended. Click the map for values.${layer?.note ? ` ${layer.note}` : ""}`);
       prefetch(fields);
     }
 
@@ -591,7 +594,7 @@
       for (let hour = 0; hour <= meta.lastHour; hour += 1) {
         const time = new Date((meta.times[0] + hour * 3600) * 1000);
         const isMidnight = hourFormat.format(time) === "00";
-        if (!isMidnight && hour % meta.stepHours !== 0) continue;
+        if (!isMidnight && !meta.offsets.includes(hour)) continue;
         const tick = document.createElement("span");
         tick.className = isMidnight ? "timeline-day" : "timeline-step";
         tick.style.left = percent(hour);
@@ -629,7 +632,8 @@
           stopPlayback();
           return;
         }
-        state.hour += 1;
+        // A week plays in 3-hour jumps so it takes about 25 s; shorter forecasts go hour by hour.
+        state.hour = Math.min(state.meta.lastHour, state.hour + (state.meta.lastHour > 72 ? 3 : 1));
         els.slider.value = String(state.hour);
         render();
       }, PLAY_STEP_MS);
