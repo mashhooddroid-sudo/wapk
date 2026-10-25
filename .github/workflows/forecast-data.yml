@@ -13,6 +13,11 @@ on:
   schedule:
     - cron: "25 */3 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and publish even if this ECMWF run is already live"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -39,7 +44,7 @@ jobs:
 
       - name: Build forecast data (skipped if this run is already published)
         id: build
-        run: python pipeline/build_forecast.py --out forecast-out --published-url https://wapk-forecast.pages.dev/latest.json
+        run: python pipeline/build_forecast.py --out forecast-out ${{ inputs.force && ' ' || '--published-url https://wapk-forecast.pages.dev/latest.json' }}
 
       - name: Publish to Cloudflare Pages
         if: steps.build.outputs.changed == 'true'
