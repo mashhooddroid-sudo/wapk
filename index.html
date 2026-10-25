@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261021-4">
-  <link rel="stylesheet" href="radar.css?v=20261025-34">
+  <link rel="stylesheet" href="radar.css?v=20261025-37">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -131,6 +131,12 @@
           <button id="radarFullscreenButton" class="map-chip map-chip-icon" type="button" aria-label="Enter fullscreen map"><span data-icon="fullscreen"></span><span id="radarFullscreenLabel" class="radar-sr-only">Fullscreen</span></button>
         </div>
 
+        <div id="radarSatelliteBar" class="map-satbar" hidden>
+          <button id="radarSatellitePlay" class="satbar-play" type="button" aria-label="Play the last 24 hours of satellite images"><span data-icon="play"></span></button>
+          <input id="radarSatelliteSlider" type="range" min="0" max="0" step="1" value="0" aria-label="Satellite image time">
+          <span id="radarSatelliteTime" class="satbar-time">Loading…</span>
+        </div>
+
         <nav class="map-rail" aria-label="Map layers">
           <button id="radarForecastToggle" class="rail-item rail-master" type="button" aria-pressed="true"><span data-icon="layers"></span><span>Forecast</span></button>
           <div id="radarForecastLayers" class="rail-group" role="group" aria-label="Forecast colour layer"><!-- Built by forecast.js from its layer categories. --></div>
@@ -223,8 +229,8 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="icons.js?v=20261025-33"></script>
   <script src="app.js?v=20261022-1"></script>
-  <script src="forecast.js?v=20261025-36"></script>
-  <script src="radar.js?v=20261025-21"></script>
+  <script src="forecast.js?v=20261025-37"></script>
+  <script src="radar.js?v=20261025-37"></script>
   <script src="views.js?v=20261025-10"></script>
   <script src="effects.js?v=glass-1"></script>
 </body>

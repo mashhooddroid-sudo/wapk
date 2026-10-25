@@ -191,9 +191,10 @@
     rail.forEach(({ group, button, select }) => {
       button.addEventListener("click", () => {
         // Choosing the active category again turns colours off and leaves just the wind.
-        const active = groupOf(state.layer) === group;
+        const active = state.enabled && groupOf(state.layer) === group;
         state.layer = active ? "none" : firstAvailable(group, state.lastType[group.key]);
         state.enabled = true;
+        if (!active) options.onLayerChosen?.();
         savePreferences();
         render();
       });
@@ -201,6 +202,7 @@
         state.layer = select.value;
         state.lastType[group.key] = select.value;
         state.enabled = true;
+        options.onLayerChosen?.();
         savePreferences();
         render();
       });
@@ -226,7 +228,16 @@
     });
     syncControls();
 
-    return { resume, pause, setTheme };
+    return { resume, pause, setTheme, setEnabled };
+
+    // Lets the satellite and radar controls switch the forecast colours off (or on).
+    function setEnabled(enabled) {
+      if (state.enabled === enabled) return;
+      state.enabled = enabled;
+      if (!enabled) stopPlayback();
+      savePreferences();
+      render();
+    }
 
     function resume() {
       state.active = true;

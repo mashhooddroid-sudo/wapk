@@ -55,6 +55,10 @@
     radiusValue: document.getElementById("radarRadiusValue"),
     satelliteProduct: document.getElementById("radarSatelliteProduct"),
     satelliteToggle: document.getElementById("radarSatelliteToggle"),
+    satelliteBar: document.getElementById("radarSatelliteBar"),
+    satellitePlay: document.getElementById("radarSatellitePlay"),
+    satelliteSlider: document.getElementById("radarSatelliteSlider"),
+    satelliteTime: document.getElementById("radarSatelliteTime"),
     refreshButton: document.getElementById("radarRefreshButton"),
     searchForm: document.getElementById("radarSearchForm"),
     searchInput: document.getElementById("radarSearchInput"),
@@ -112,6 +116,10 @@
     satelliteOverlay: null,
     satellitePending: null,
     satelliteRequest: 0,
+    // The image time picked on the satellite bar; null follows the newest image.
+    satelliteTime: null,
+    satellitePlayTimer: null,
+    satelliteHold: 0,
     searchMarker: null,
     strikeLayer: null,
     strikes: [],
@@ -336,6 +344,17 @@
       url: FORECAST_DATA_URL,
       theme: state.theme,
       getUnit: () => window.Atmos?.unit,
+      // Choosing a forecast layer hides satellite and radar; they can be turned back on by hand.
+      onLayerChosen: () => {
+        if (els.satelliteToggle.checked) {
+          els.satelliteToggle.checked = false;
+          renderSatellite();
+        }
+        if (els.pmdToggle.checked) {
+          els.pmdToggle.checked = false;
+          renderPmdRadar();
+        }
+      },
     }) || null;
     state.targetLayer = L.layerGroup().addTo(state.map);
     setTileLayer(els.mapTheme.value || "auto");
@@ -351,6 +370,8 @@
     });
 
     els.pmdToggle.addEventListener("change", () => {
+      // Turning radar on hides the forecast colours; the Forecast button brings them back on top.
+      if (els.pmdToggle.checked) state.forecast?.setEnabled(false);
       if (els.pmdToggle.checked && Date.now() - state.pmdFetchAt >= PMD_RADAR_REFRESH_MS) fetchPmdRadar(false);
       else renderPmdRadar();
     });
@@ -411,15 +432,27 @@
     });
 
     els.satelliteToggle.addEventListener("change", () => {
+      if (els.satelliteToggle.checked) state.forecast?.setEnabled(false);
       if (els.satelliteToggle.checked && !state.satelliteMeta) fetchSatellite(false);
       else renderSatellite();
     });
 
     els.satelliteProduct.addEventListener("change", () => {
-      // Picking a product also switches the satellite layer on.
+      // Picking a product also switches the satellite layer on (and the forecast colours off).
       els.satelliteToggle.checked = true;
+      state.forecast?.setEnabled(false);
       renderSatellite();
     });
+
+    els.satelliteSlider.addEventListener("input", () => {
+      stopSatellitePlayback();
+      const frames = satelliteFrames(currentSatelliteProduct());
+      const index = Number(els.satelliteSlider.value);
+      state.satelliteTime = index >= frames.length - 1 ? null : frames[index];
+      renderSatellite();
+    });
+
+    els.satellitePlay.addEventListener("click", () => (state.satellitePlayTimer ? stopSatellitePlayback() : startSatellitePlayback()));
 
     els.weatherOpacityInput.addEventListener("input", () => {
       updateWeatherOpacity();
@@ -656,6 +689,8 @@
     if (state.satellitePending) state.map.removeLayer(state.satellitePending);
     state.satellitePending = null;
     if (!els.satelliteToggle.checked) {
+      stopSatellitePlayback();
+      els.satelliteBar.hidden = true;
       if (state.satelliteOverlay) state.map.removeLayer(state.satelliteOverlay);
       state.satelliteOverlay = null;
       state.satelliteRequest += 1;
@@ -663,7 +698,7 @@
       return;
     }
     if (!state.satelliteMeta) return;
-    const product = state.satelliteMeta.products.find((item) => item.id === els.satelliteProduct.value) || state.satelliteMeta.products[0];
+    const product = frameOf(currentSatelliteProduct());
     // Areas without imagery come back black (night side, space). In dark theme the images are screen-blended,
     // so black disappears into the map and the dark map barely changes the image's own colours.
     pane.style.mixBlendMode = state.theme === "dark" ? "screen" : "normal";
@@ -700,6 +735,82 @@
     state.satellitePending = overlay;
     overlay.addTo(state.map);
     if (state.satelliteOverlay) overlay.setOpacity(0);
+  }
+
+  function currentSatelliteProduct() {
+    return state.satelliteMeta.products.find((item) => item.id === els.satelliteProduct.value) || state.satelliteMeta.products[0];
+  }
+
+  // Stored image times of a product, oldest first (the worker keeps the last 24 hours).
+  function satelliteFrames(product) {
+    if (product.frames?.length) return product.frames;
+    return product.time ? [product.time] : [];
+  }
+
+  // The product at the time chosen on the satellite bar, and the bar updated to match.
+  function frameOf(product) {
+    const frames = satelliteFrames(product);
+    let index = state.satelliteTime ? frames.indexOf(state.satelliteTime) : -1;
+    if (index < 0) {
+      index = frames.length - 1;
+      state.satelliteTime = null;
+    }
+    const time = frames[index] || null;
+    const url = product.frames?.length && time ? `${product.frameUrl}${encodeURIComponent(time)}` : product.url;
+    els.satelliteBar.hidden = false;
+    els.satelliteSlider.max = String(Math.max(0, frames.length - 1));
+    els.satelliteSlider.value = String(Math.max(0, index));
+    els.satelliteSlider.disabled = frames.length < 2;
+    els.satellitePlay.disabled = frames.length < 2;
+    const ms = Date.parse(time);
+    els.satelliteTime.textContent = Number.isFinite(ms)
+      ? `${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: API_TIMEZONE }).format(new Date(ms))} · ${formatAge(ms)}`
+      : "Loading…";
+    els.satelliteSlider.setAttribute("aria-valuetext", els.satelliteTime.textContent);
+    return { ...product, time, url };
+  }
+
+  // Plays the past day in hourly steps (the newest image last), holding briefly on the newest before looping.
+  // Each step waits until the previous picture has arrived, and the next one is fetched ahead.
+  function startSatellitePlayback() {
+    if (!state.satelliteMeta || !els.satelliteToggle.checked) return;
+    const frames = satelliteFrames(currentSatelliteProduct());
+    if (frames.length < 2) return;
+    setSatellitePlayIcon(true);
+    state.satelliteHold = 0;
+    state.satellitePlayTimer = window.setInterval(() => {
+      if (state.satellitePending) return;
+      const product = currentSatelliteProduct();
+      const list = satelliteFrames(product);
+      const steps = list.filter((time, index) => time.slice(14, 16) === "00" || index === list.length - 1);
+      const current = state.satelliteTime ?? list[list.length - 1];
+      let next;
+      if (current === list[list.length - 1]) {
+        if (state.satelliteHold < 3) {
+          state.satelliteHold += 1;
+          return;
+        }
+        state.satelliteHold = 0;
+        next = steps[0];
+      } else {
+        next = steps.find((time) => time > current) || list[list.length - 1];
+      }
+      state.satelliteTime = next === list[list.length - 1] ? null : next;
+      renderSatellite();
+      const after = steps.find((time) => time > next);
+      if (after && product.frameUrl) new Image().src = `${product.frameUrl}${encodeURIComponent(after)}`;
+    }, 650);
+  }
+
+  function stopSatellitePlayback() {
+    window.clearInterval(state.satellitePlayTimer);
+    state.satellitePlayTimer = null;
+    setSatellitePlayIcon(false);
+  }
+
+  function setSatellitePlayIcon(playing) {
+    els.satellitePlay.setAttribute("aria-label", playing ? "Pause satellite loop" : "Play the last 24 hours of satellite images");
+    els.satellitePlay.innerHTML = window.AtmosIcons?.ui(playing ? "pause" : "play") || (playing ? "Pause" : "Play");
   }
 
   function describeSatellite(product) {
