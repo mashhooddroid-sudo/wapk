@@ -1,0 +1,791 @@
+# WAPK — Weather Alert PK: Complete Infrastructure Guide
+
+> Everything about how WAPK works: what runs where, where every piece of data comes from, how to deploy, how to fix things.
+> Written 25 October 2026. If something changes, update this file.
+
+---
+
+## Table of contents
+
+1. [The big picture](#1-the-big-picture)
+2. [Accounts and logins](#2-accounts-and-logins)
+3. [Folders on your PC](#3-folders-on-your-pc)
+4. [The website (wapk.pages.dev)](#4-the-website-wapkpagesdev)
+5. [Where every piece of data comes from](#5-where-every-piece-of-data-comes-from)
+6. [The forecast map pipeline (ECMWF → your map)](#6-the-forecast-map-pipeline-ecmwf--your-map)
+7. [The map data file format](#7-the-map-data-file-format)
+8. [The backend worker (lightning-weatherx-pk-api)](#8-the-backend-worker-lightning-weatherx-pk-api)
+9. [Satellite images](#9-satellite-images)
+10. [PMD radar](#10-pmd-radar)
+11. [Lightning strikes](#11-lightning-strikes)
+12. [METAR (live airport weather)](#12-metar-live-airport-weather)
+13. [Thunderstorm, hail and fog rules](#13-thunderstorm-hail-and-fog-rules)
+14. [The Maps screen: how it behaves](#14-the-maps-screen-how-it-behaves)
+15. [Schedules: what runs when](#15-schedules-what-runs-when)
+16. [Costs and free-tier limits](#16-costs-and-free-tier-limits)
+17. [How to deploy each part](#17-how-to-deploy-each-part)
+18. [Common tasks (how do I…?)](#18-common-tasks-how-do-i)
+19. [Troubleshooting](#19-troubleshooting)
+20. [Rules and gotchas to never forget](#20-rules-and-gotchas-to-never-forget)
+21. [Open items](#21-open-items)
+22. [Glossary](#22-glossary)
+
+---
+
+## 1. The big picture
+
+WAPK is a **static website** (just HTML, CSS and JavaScript files, no server of its own). Everything "live" comes from
+other places: some are free public services, some are **your own** Cloudflare services.
+
+```
+                         ┌──────────────────────────────────────────────┐
+                         │        Visitor's browser (wapk.pages.dev)    │
+                         │  Overview · Hourly · This week · Maps        │
+                         └──────────────┬───────────────────────────────┘
+                                        │ reads from
+      ┌───────────────┬─────────────────┼──────────────────┬──────────────────────┬──────────────────┐
+      ▼               ▼                 ▼                  ▼                      ▼                  ▼
+ Open-Meteo     Your METAR API    wapk-forecast       Your PK worker          PMD radar images    Map tiles
+ (forecast,     travel-weather-   .pages.dev          lightning-weatherx-     ffd.pmd.gov.pk      Esri / OSM
+ air quality,   api…workers.dev   (ECMWF map data)    pk-api…workers.dev      (loaded directly)
+ city search)                          ▲              (strikes, satellite,
+                                       │               PMD radar list)
+                                       │                    ▲   ▲   ▲
+                              GitHub Actions             cron every 5 min
+                              every 3 hours              │   │   └── PMD manifest (ffd.pmd.gov.pk)
+                              (Python pipeline)          │   └────── EUMETSAT satellite (view.eumetsat.int)
+                                       ▲                 └────────── Lightning feed (lightning-alerts worker)
+                                       │
+                              ECMWF open data
+                              (data.ecmwf.int, GRIB2)
+```
+
+**In one sentence each:**
+
+| Part | What it is | Where it lives |
+|---|---|---|
+| Website | The pages people see | Cloudflare Pages project `wapk` → https://wapk.pages.dev |
+| Forecast map data | ECMWF model turned into small files | Cloudflare Pages project `wapk-forecast` → https://wapk-forecast.pages.dev |
+| Map data builder | Python script that makes the files above | GitHub repo `mashhooddroid-sudo/wapk`, runs on GitHub Actions |
+| Backend worker | Lightning, satellite, radar list | Cloudflare Worker `lightning-weatherx-pk-api` |
+| Database | Strikes + satellite images | Cloudflare D1 `lightning-pk-strikes` |
+| METAR API | Live airport weather | Your separate worker `travel-weather-api.mashhood2717.workers.dev` |
+
+---
+
+## 2. Accounts and logins
+
+| Service | Account | Used for |
+|---|---|---|
+| **Cloudflare** | **Mashhood.droid@gmail.com** (Account ID `e35f62e834050b6f12e9103657ebcb53`) | Website, map data site, worker, D1 database. **Everything WAPK runs here.** |
+| Cloudflare (other) | pakisweather@gmail.com | **Not used by WAPK.** Wrangler was once logged into it — deploying from it fails with "Authentication error 10000". |
+| **GitHub** | **mashhooddroid-sudo** | Private repo `wapk` and the scheduled map-data builds |
+| Git commit name | mashhood2717-ai | Name on commits (set in your git config). Different from the GitHub account — that is fine. |
+| METAR API | Lives on the `mashhood2717` Workers subdomain | Your Travel Weather API (source is not in this project) |
+
+**Check which Cloudflare account Wrangler uses before any deploy:**
+
+```bash
+npx wrangler whoami
+```
+
+It must show **Mashhood.droid@gmail.com's Account**.
+
+**Secrets stored in GitHub** (repo → Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token named "WAPK forecast GitHub", permission **Account → Cloudflare Pages → Edit** |
+| `CLOUDFLARE_ACCOUNT_ID` | `e35f62e834050b6f12e9103657ebcb53` |
+
+If the token is ever deleted or expires, the map data stops updating (the GitHub run fails at "Publish to Cloudflare Pages").
+Make a new one the same way and paste it into the secret.
+
+---
+
+## 3. Folders on your PC
+
+| Folder | What is in it |
+|---|---|
+| `D:\Test Weather webapp` | **The WAPK website + map pipeline.** Git repo, pushed to GitHub `mashhooddroid-sudo/wapk`. |
+| `D:\Lightning Weather x` | Lightning Weather X sites **and the backend worker** WAPK uses (`worker-pk\index.js`). **Not a git repo — back up files before editing.** |
+| `D:\Last stable build codes\weather_app` | Your Flutter app "Weather & Prayer Alert PK" (v1.8.4+108). Source of the thunderstorm/hail rules. |
+
+### Inside `D:\Test Weather webapp`
+
+| File | What it does |
+|---|---|
+| `index.html` | The page structure: sidebar, Overview, Hourly, This week, Maps. Loads all scripts with `?v=` version tags. |
+| `styles.css` | Look of the whole site (glass cards, colours, phone layout). |
+| `radar.css` | Look of the Maps screen (layer rail, timeline, satellite bar, legend). |
+| `app.js` | Overview / Hourly / Week: fetches the forecast, METAR, air quality, city search; draws everything. |
+| `weather-logic.js` | Thunderstorm, hail and fog rules ported from your Flutter app. |
+| `icons.js` | All the drawn icons (weather icons and small UI icons). |
+| `views.js` | Switching between screens, settings panel open/close. |
+| `effects.js` | Visual effects (cursor trail, glass). |
+| `radar.js` | Maps screen: Leaflet map, lightning, PMD radar, satellite, zoom limits; starts the forecast map. |
+| `forecast.js` | Forecast map layers: colours, wind particles, timeline, layer rail with dropdowns, popups. |
+| `pipeline/build_forecast.py` | The Python script that turns ECMWF files into map data. |
+| `pipeline/requirements.txt` | Exact Python package versions for the pipeline. |
+| `.github/workflows/forecast-data.yml` | The GitHub schedule that runs the pipeline every 3 hours. |
+| `.gitignore` | Keeps private/local stuff out of git (`.openai/`, `atmos-weather/`, `test.txt`, `forecast-out/`, `.wrangler/`, Python caches). |
+| `.openai/`, `atmos-weather/`, `test.txt` | **Private / old.** Never deploy or commit these. |
+
+---
+
+## 4. The website (wapk.pages.dev)
+
+- **Name:** WAPK — Weather Alert PK (renamed from "Atmos" on 21 Oct 2026; some internal names like `window.Atmos` and the
+  `atmos.preferences.v1` storage key were kept on purpose so saved settings keep working).
+- **Hosting:** Cloudflare Pages project **`wapk`**, account mashhood.droid.
+- **Address:** https://wapk.pages.dev
+- **Type:** static files only. No build step, no framework. Leaflet 1.9.4 for the map.
+- **The ten files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
+  styles.css, radar.css, weather-logic.js`. **Nothing else.**
+
+### Screens
+
+| Screen | Shows | Data from |
+|---|---|---|
+| Overview | Current weather, next 24 h chart, week list, highlights (wind, humidity, UV, visibility, sunrise/sunset, air quality) | Open-Meteo + METAR |
+| Hourly forecast | Hour by hour | Open-Meteo |
+| This week | 7 days, tap a day for details (rain, wind, UV, day/night, storm strength, hail) | Open-Meteo |
+| Maps | Forecast layers, satellite, PMD radar, lightning | Your map data, your worker, PMD |
+
+### Things the browser remembers (localStorage, per visitor)
+
+| Key | Remembers |
+|---|---|
+| `atmos.preferences.v1` | Chosen place, saved cities, °C/°F, theme |
+| `wapk.forecastMap` | Forecast on/off, chosen layer, last type per category, height, particles on/off |
+| `wapk.lightningVisible` | Lightning on/off |
+
+---
+
+## 5. Where every piece of data comes from
+
+| What you see | Source | How it reaches the browser | How fresh |
+|---|---|---|---|
+| **Forecast numbers** (Overview/Hourly/Week) | **Open-Meteo**, model **ECMWF IFS** (`models=ecmwf_ifs`) | Browser calls `api.open-meteo.com` directly | Open-Meteo updates as ECMWF runs arrive |
+| Rain chance, visibility, UV, freezing level, 500 hPa temp & wind, lifted index | **Open-Meteo default model** (`best_match`) — ECMWF does not provide these | Second request, merged by time | Same |
+| **Current conditions** near an airport | **Your METAR API** | Browser calls it directly | Used only if report < 90 min old and you are inside the airport's radius |
+| Air quality | Open-Meteo Air Quality API | Direct | Hourly |
+| City search | Open-Meteo Geocoding | Direct | — |
+| "Current location" name | BigDataCloud reverse geocoding (free client endpoint) | Direct | — |
+| **Forecast map layers** | **ECMWF IFS open data, raw GRIB2 files** — *not* Open-Meteo | Your pipeline → `wapk-forecast.pages.dev` | New run twice a day (00Z, 12Z) |
+| Satellite | EUMETSAT Meteosat (Indian Ocean service, satellite at 45.5°E) | Your worker stores images in D1 | New image every 15 min, usually 30–50 min old |
+| PMD radar | PMD Flood Forecasting Division (ffd.pmd.gov.pk) | Worker proxies the list; images load straight from PMD | 10 min (sri, cappi01), hourly (rain12) |
+| Lightning | Your lightning-alerts worker `/buffer` | Your PK worker stores in D1 | Every 5 min |
+| Base map | Esri (dark grey canvas) / OpenStreetMap | Direct tiles | — |
+
+**Key point:** both the forecast pages and the map use the **same ECMWF model**, but:
+- Forecast pages → through **Open-Meteo's API** (interpolated to your exact point).
+- Map → **raw ECMWF files you process yourself** (0.25° grid, about 25 km).
+
+---
+
+## 6. The forecast map pipeline (ECMWF → your map)
+
+### Step by step
+
+```
+ECMWF open data (data.ecmwf.int)
+   │  GRIB2 files, global, IFS 0.25°
+   ▼
+GitHub Actions (every 3 hours, ubuntu, Python 3.12)
+   │  pipeline/build_forecast.py
+   │   1. find newest 00Z/12Z run that reaches 168 h
+   │   2. skip everything if that run is already published
+   │   3. download 3 batches of GRIB2
+   │   4. crop to 0–55°N, 25–110°E
+   │   5. calculate extra fields (freezing level, humidity, totals…)
+   │   6. pack every field+hour into a 1-byte-per-point .bin file
+   │   7. write latest.json, _headers, 404.html, index.html
+   ▼
+npx wrangler pages deploy forecast-out --project-name wapk-forecast
+   ▼
+https://wapk-forecast.pages.dev  (latest.json + runs/<runId>/<field>/<step>.bin)
+   ▼
+Visitor's browser (forecast.js) downloads only what is on screen
+```
+
+### Model and coverage
+
+| Setting | Value |
+|---|---|
+| Model | ECMWF IFS, open data, **0.25°** (CC-BY-4.0 licence) |
+| Runs used | **00Z and 12Z only** (06Z/18Z stop at 90 h, too short for 7 days) |
+| Length | **7 days (168 h)** |
+| Steps | Every **3 h** from 0 to 144 h, then every **6 h** to 168 h → **53 steps** |
+| Area | **0°N–55°N, 25°E–110°E** (Pakistan plus surroundings) |
+| Grid | **341 × 221** points |
+| New data appears | About **1 PM** and **1 AM** Pakistan time |
+
+### What is downloaded (three batches)
+
+| Batch | ECMWF parameters |
+|---|---|
+| Surface | `2t` temperature, `2d` dew point, `tp` total rain, `sf` snowfall, `sd` snow depth (water), `rsn` snow density, `10u/10v` wind, `msl` pressure, `tcc/lcc/mcc/hcc` clouds, `10fg` gusts, `mucape` CAPE, `ssrd` solar radiation, `tcwv` water vapour, `ptype` precipitation type, `tprate` precipitation rate |
+| Pressure levels | `u`, `v` wind, `t` temperature, `r` humidity at **925, 850, 700, 500, 250 hPa** |
+| Freezing level inputs | `t` temperature, `gh` height at **1000, 925, 850, 700, 600, 500, 400, 300 hPa** |
+
+### The 40 fields that are published
+
+| Field name | Meaning | Unit | How it is made |
+|---|---|---|---|
+| `temp` | Temperature at 2 m | °C | `2t` − 273.15 |
+| `dew` | Dew point at 2 m | °C | `2d` − 273.15 |
+| `rh` | Humidity at the surface | % | Calculated from temperature and dew point (Magnus formula) |
+| `t925 … t250` | Temperature at each pressure level | °C | `t` − 273.15 |
+| `r925 … r250` | Humidity at each pressure level | % | `r` |
+| `u10, v10` | Wind at 10 m (east and north parts) | m/s | `10u`, `10v` |
+| `u925 … v250` | Wind at each pressure level | m/s | `u`, `v` |
+| `gust` | Wind gusts | m/s | `10fg` (step 0 has none, so step 3's is used) |
+| `precip` | Rain rate | mm/h | Change in `tp` between steps ÷ hours |
+| `rainacc` | Rain total since the run started | mm | `tp` × 1000 |
+| `snowacc` | New snow since the run started | cm | `sf` × 1000 (≈ 1 cm snow per mm water) |
+| `snowdepth` | Snow depth | cm | `sd` ÷ density (`rsn`, default 300) — glaciers cap at 1000 cm |
+| `ptype` | Precipitation type: 1 rain, 2 mix, 3 snow, 4 freezing | category | `ptype`, only where `tprate` ≥ 0.1 mm/h |
+| `cloud, lowcloud, midcloud, highcloud` | Cloud cover | % | `tcc`, `lcc`, `mcc`, `hcc` × 100 |
+| `pressure` | Sea-level pressure | hPa | `msl` ÷ 100 |
+| `cape` | Thunderstorm energy | J/kg | `mucape` |
+| `freezing` | Freezing level height above sea level | m | Highest 0 °C crossing between the 8 levels; **0 = "at the ground"** wherever 2 m temperature ≤ 0 °C |
+| `solar` | Sunlight reaching the ground (3-hour mean) | W/m² | Change in `ssrd` ÷ seconds |
+| `tcwv` | Water vapour in the whole air column | mm | `tcwv` |
+
+**Why no 900 hPa?** ECMWF has no 900 hPa level. 925 hPa (about 800 m) is the nearest.
+**Why no visibility on the map?** Not in ECMWF's free data.
+
+### The GitHub workflow
+
+- **File:** `.github/workflows/forecast-data.yml`
+- **Schedule:** `25 */3 * * *` → at 25 minutes past every 3rd hour (UTC).
+- **Skip logic:** it reads https://wapk-forecast.pages.dev/latest.json. If its `runId` equals the newest run, it stops
+  in about 15 seconds without publishing.
+- **Full build:** about **10 minutes**.
+- **Manual run:** GitHub → repo `wapk` → **Actions** → **Forecast map data** → **Run workflow**. Tick **force** to rebuild
+  even if nothing new is out.
+- **Python packages (pinned):** `ecmwf-opendata==0.3.35`, `eccodes==2.50.0`, `numpy==2.5.4`.
+
+### FORMAT_VERSION (very important)
+
+`FORMAT_VERSION` in `build_forecast.py` (currently **6**) is part of the run ID, e.g. `2026102412-v6`.
+
+- Run files are cached in browsers for **a whole year** ("immutable").
+- So if you ever change **which fields exist, their encoding, or the steps**, you **must** increase `FORMAT_VERSION`.
+  Otherwise visitors could mix old cached files with new ones and see wrong values.
+- Changing it also forces the next scheduled build to republish even if ECMWF has no new run.
+
+| Version | What changed |
+|---|---|
+| 2 | Temperature range widened for upper levels |
+| 3 | Added dew point, humidity, totals, snow, solar, cloud layers |
+| 4 | Added water vapour and precipitation type |
+| 5 | Precipitation type limited to where it is actually falling |
+| 6 | 7-day forecast (53 steps) |
+
+---
+
+## 7. The map data file format
+
+### `latest.json` — the index
+
+Small JSON file. The map always reads this first (cached 5 minutes). Example parts:
+
+```json
+{
+  "source": "ECMWF IFS open data",
+  "model": "IFS 0.25°",
+  "license": "CC-BY-4.0",
+  "attribution": "Contains modified Copernicus/ECMWF open data. © ECMWF, CC-BY-4.0.",
+  "run": "2026-10-24T12:00:00Z",
+  "runId": "2026102412-v6",
+  "generatedAt": "2026-10-25T05:24:20Z",
+  "grid": { "north": 55, "west": 25, "step": 0.25, "nx": 341, "ny": 221 },
+  "times": [1792843200, 1792854000, "... one Unix time per step"],
+  "missing": 255,
+  "fields": { "temp": { "encoding": "linear", "offset": -80, "scale": 0.5118, "unit": "°C" }, "...": "..." },
+  "path": "runs/2026102412-v6/{field}/{step}.bin"
+}
+```
+
+### `.bin` files — the data
+
+- Path: `runs/<runId>/<field>/<step>.bin`, e.g. `runs/2026102412-v6/t850/12.bin`.
+- **Exactly 75,361 bytes** (341 × 221). **One byte per grid point.** No header.
+- Order: row by row, **north to south**, each row **west to east**.
+- Byte **255 = missing**. Bytes **0–254 = a code**.
+- Turning a code back into a value:
+  - **linear:** `value = offset + code × scale`
+  - **sqrt:** `value = (code × scale)²` — used for rain, CAPE, snow, rain total, so small amounts keep detail.
+
+| Field group | Encoding | Range | Precision (one step) |
+|---|---|---|---|
+| Temperatures, dew point | linear | −80 to +50 °C | ≈ 0.5 °C |
+| Wind (all levels) | linear | −100 to +100 m/s | ≈ 0.8 m/s |
+| Gust | linear | 0–80 m/s | ≈ 0.3 m/s |
+| Humidity, clouds | linear | 0–100 % | ≈ 0.4 % |
+| Pressure | linear | 940–1060 hPa | ≈ 0.5 hPa |
+| Freezing level | linear | 0–7000 m | ≈ 28 m |
+| Solar | linear | 0–1200 W/m² | ≈ 5 W/m² |
+| Water vapour | linear | 0–80 mm | ≈ 0.3 mm |
+| Precipitation type | linear (scale 1) | 0–4 | exact category |
+| Rain rate | sqrt | 0–100 mm/h | fine at low end |
+| CAPE | sqrt | 0–8000 J/kg | fine at low end |
+| Rain total | sqrt | 0–500 mm | fine at low end |
+| New snow | sqrt | 0–300 cm | fine at low end |
+| Snow depth | sqrt | 0–1000 cm | fine at low end |
+
+### Other files on the data site
+
+| File | Why it exists |
+|---|---|
+| `_headers` | Lets any site read the data (CORS); caches `latest.json` 5 min and run files 1 year; labels run files `text/plain` so Cloudflare compresses them (≈ 75 KB → 20–45 KB). |
+| `404.html` | Without it, Cloudflare Pages answers missing files with the home page and status 200. The map needs a real 404 to know a run was replaced. |
+| `index.html` | A tiny page saying what the site is, with the ECMWF credit. |
+
+### Size
+
+- One run: **≈ 2,120 files, ≈ 155 MB**.
+- One layer, one hour, for a visitor: **≈ 20–45 KB** download.
+- The map keeps up to 80 decoded files in memory and pre-loads the next 3 steps.
+
+---
+
+## 8. The backend worker (lightning-weatherx-pk-api)
+
+| Setting | Value |
+|---|---|
+| Name | `lightning-weatherx-pk-api` |
+| Address | https://lightning-weatherx-pk-api.mashhood-droid.workers.dev |
+| Source | `D:\Lightning Weather x\worker-pk\index.js` |
+| Config | `D:\Lightning Weather x\wrangler-pk.jsonc` |
+| Deploy command | `npx wrangler deploy -c wrangler-pk.jsonc` (run inside `D:\Lightning Weather x`) |
+| **Do NOT use** | `npm run cf:worker:deploy` — that deploys a *different* worker (`lightning-weatherx-api`, for Lightning Weather X) |
+| Cron | `*/5 * * * *` — every 5 minutes |
+| Database | D1 `lightning-pk-strikes` (binding `DB`, id `6d611c66-f3a0-4046-a384-e3e86bd5fdad`) |
+
+### Routes
+
+| Route | Returns | Used by |
+|---|---|---|
+| `GET /api/strikes` | Lightning strikes in Pakistan (last 24 h) | WAPK Maps |
+| `GET /api/refresh` | Forces a strike refresh | — |
+| `GET /api/search` | Place search | Lightning Weather X |
+| `GET /api/weather-layers` | Old EUMETSAT layer list | **Lightning Weather X — keep it** |
+| `GET /api/pmd-radar` | PMD radar list (manifest), cached 2 min | WAPK Maps |
+| `GET /api/satellite` | Satellite products, their stored times (`frames`) and image addresses | WAPK Maps |
+| `GET /api/satellite/<product>?t=<time>` | One stored satellite image (cached 1 day in browsers) | WAPK Maps |
+
+### Every 5 minutes the cron does
+
+1. **Lightning:** fetch the lightning-alerts `/buffer`, keep strikes inside Pakistan from the last 24 h, store in D1.
+2. **Satellite:** fetch up to **6** images (3 at a time) from EUMETSAT: newest first, then fill missing hourly images
+   of the past 24 h; delete images older than 24 h.
+
+### D1 tables (`lightning-pk-strikes`)
+
+| Table | Holds |
+|---|---|
+| `strikes` | One row per strike (id, lat, lon, timestamp, raw JSON) |
+| `ingest_runs` | A log of each strike refresh |
+| `satellite_frames` | Satellite images: product, time, image bytes (key = product + time) |
+| `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
+
+**Backups of earlier worker versions** are kept in Claude's scratchpad (`lwx-backup/worker-pk*`) — treat them as temporary.
+
+---
+
+## 9. Satellite images
+
+- **Source:** EUMETSAT View service (`view.eumetsat.int`), **Meteosat Indian Ocean Data Coverage** (`msg_iodc`), satellite
+  at 45.5°E.
+- **New image every 15 minutes.** EUMETSAT publishes it about **25–35 minutes** after the scan, so what you see is usually
+  **30–50 minutes old**. That delay is EUMETSAT's, not yours.
+- **Why the worker stores them:** EUMETSAT draws each picture on request and takes 10–60 seconds. The worker fetches once
+  and everyone gets the stored copy instantly.
+- **History:** last **24 hours** are kept. Backfill of a fresh table takes about 5 hours; after that, every 15-minute image
+  is kept.
+- **Picture:** one image covering the whole map area, 2048 px wide, Web Mercator (lines up with the map exactly).
+  JPEG (PNG for rain rate), 150–480 KB each. Areas with no data are painted black and blended away on the dark map.
+
+| Product id | Name in the dropdown | Note |
+|---|---|---|
+| `ir108` | Infrared | Cloud tops, day and night |
+| `vis006` | Visible | Daylight only |
+| `wv062` | Water vapour | Moisture high in the atmosphere |
+| `natural` | Natural colour | Daylight only |
+| `airmass` | Airmass | Air masses and jet streams |
+| `dust` | Dust | Dust shows pink to magenta |
+| `convection` | Convection | Strong storms bright yellow; daylight only |
+| `rain` | Rain rate | Satellite rain estimate (H SAF) |
+
+**Satellite bar** (top of the map when Satellite is on): drag to any stored time; **Play** steps through the past day hour
+by hour (waiting for each image to load), holds on the newest, then loops.
+
+---
+
+## 10. PMD radar
+
+- **Source:** PMD Flood Forecasting Division public mirror. PMD has allowed this use (confirmed by you, 21 Oct 2026).
+- **List:** `https://ffd.pmd.gov.pk/radar/manifest` — it has no CORS header, so the worker fetches it for the browser.
+- **Images:** 360 × 360 PNGs from `https://ffd.pmd.gov.pk/storage/radar/…`, loaded **directly from PMD**.
+- **Sites:** Islamabad and Karachi.
+- **Products:** `sri` (every 10 min, 450 km), `cappi01` (every 10 min, 200 km), `rain12` (hourly).
+- **Status rule:** if any product of a radar is still updating → "running, no rain showing". If every product stopped →
+  "offline since <time>". Never guess "last rain" from images. **You know the real radar status — PMD outages are common.**
+- PMD developer contact shown on their page: usman.ali.pmd@gmail.com.
+
+---
+
+## 11. Lightning strikes
+
+- **Upstream:** `https://lightning-alerts.mashhoodiqbal493.workers.dev/buffer` (your lightning-alerts worker). Returns
+  strikes as `[lat, lon, epochMs]`.
+- **The PK worker** keeps only strikes inside Pakistan from the last 24 hours, stores them in D1, and serves them at
+  `/api/strikes`.
+- **On the map:** monitoring radius, strike markers, stats cards below the map (cached 24 h, selected window, within radius,
+  nearest). Lightning can be hidden with the **Lightning** button; the choice is remembered.
+
+---
+
+## 12. METAR (live airport weather)
+
+- **API:** `https://travel-weather-api.mashhood2717.workers.dev` (your own worker; source is not in this project).
+- WAPK calls `/pakistan-metar` and `/worldwide-metar` and picks the nearest airport.
+- **Rule:** if you are inside that airport's radius (its own radius field, else 30 km) **and** the report is under
+  **90 minutes** old, the METAR **replaces** the current conditions on the Overview. Otherwise the forecast is used and the
+  card names the nearest airport.
+- **Known API bugs that `app.js` works around:**
+  - `/worldwide-metar` has no Pakistani airports; `/nearest-airport` only answers inside the 30–40 km radius.
+  - `flight_category` is always "VFR" for international stations → WAPK calculates it from ceiling and visibility.
+  - Gusts are dropped → WAPK reads them from the raw METAR text.
+  - "9999"/CAVOK become 9.654 km → shown as "10+ km".
+  - `observed` is an ISO string for Pakistan but Unix seconds for international stations.
+- **Hail from METAR:** a report containing `GR` or `GS` adds "with possible hail".
+
+---
+
+## 13. Thunderstorm, hail and fog rules
+
+**Source:** your Flutter app, `D:\Last stable build codes\weather_app\lib\services\weather_controller.dart` and
+`WEATHER_LOGIC.md`. Ported to `weather-logic.js` with **identical thresholds**. If you change them in the app, change them
+here too.
+
+**Data needed** (Open-Meteo): ECMWF IFS for weather code, precipitation, cloud, CAPE, temperature; `best_match` for
+precipitation probability, lifted index, freezing level, 500 hPa temperature and wind, visibility; plus the grid cell's
+`elevation`.
+
+### For each hour
+
+1. **Temperature fix:** snow above 4 °C → rain; 2–4 °C → sleet; rain at ≤ 0 °C → snow; freezing codes above 2 °C → normal.
+2. **Three doors — at least one must open for a storm to be possible:**
+   - **Rain door:** probability > 25 % **and** rain > 1 mm
+   - **Instability door:** probability > 50 % **and** rain ≥ 0.1 mm **and** lifted index ≤ −3 **and** CAPE ≥ 2000
+   - **Amount door:** rain > 3 mm
+   - All shut + the model said storm → shown as rain by amount (≥ 4 heavy, ≥ 1 moderate, > 0.1 light) or sky from cloud.
+   - All shut + no storm from the model → model's code unchanged.
+3. **Is it really convective?** (any one)
+   - Model said storm **and** CAPE ≥ 500
+   - Probability > 30 % **and** ((LI ≤ −4 and CAPE ≥ 1000) or (LI ≤ −3 and CAPE ≥ 2000))
+   - Rain code **and** (rain > 0.5 mm or probability > 50 %) **and** CAPE ≥ 500
+4. **Tier by amount** (amount picks the row, storm picks the column):
+
+| Rain in the hour | Storm | Not a storm |
+|---|---|---|
+| ≤ 1 mm | 95 Isolated thunderstorm | 61 Light rain |
+| 1–3 mm | 96 Scattered thunderstorms | 63 Moderate rain |
+| 3–4 mm | 97 Thunderstorms | 63 Rain |
+| > 4 mm | 99 Heavy thunderstorms | 65 Heavy rain |
+
+5. **Overcast fix:** cloud ≥ 90 % with code 1 or 2 → 3 (overcast).
+6. **Fog from visibility** (only if the hour is clear/cloudy): ≤ 1000 m Mist (44), ≤ 500 m Fog (45), ≤ 200 m Dense fog (46),
+   < 50 m Very dense fog (47).
+
+### Hail (same hour)
+
+Hail is possible when the hour is a storm (95/96/97/99) **and all three** hold:
+
+| Test | Threshold | Why |
+|---|---|---|
+| Warm layer = freezing level − ground elevation | **≤ 4200 m** | Deeper warm air melts the stone |
+| Temperature at 500 hPa | **≤ −4 °C** | Cold enough aloft for ice to grow |
+| 500 hPa wind (shear proxy) | **≥ 17 kt** | Updraft can organise |
+
+Fitted to three confirmed hail events in Sep 2026 (Samana/Hangu, Nowshera, Malam Jabba area) — provisional.
+
+### Storm strength badge (from CAPE)
+
+| CAPE (J/kg) | Badge |
+|---|---|
+| < 500 | none |
+| 500–1000 | Light |
+| 1000–2500 | Moderate |
+| 2500–3500 | Strong |
+| ≥ 3500 | Severe |
+
+### For each day
+
+- **Meaningful-rain gate:** rain only headlines the day if (≥ 3 rain hours **and** max probability ≥ 10 % **and**
+  total ≥ 1 mm) **or** total > 2 mm.
+- **Headline:** any storm hour wins by severity; otherwise the most frequent rain/snow/fog code; otherwise clear vs cloudy
+  from **average cloud cover** (< 20 % clear, < 50 % mostly clear, < 80 % partly cloudy, else overcast).
+- **24-hour re-tier** when the headline is rain or storm: ≤ 7 mm → 95/61, 7–14 → 96/63, 14–25 → 97/63, > 25 → 99/65.
+  A storm day = any storm hour, **or** the model flagged storms and max probability > 25 % and total ≥ 1 mm.
+- **Day vs night:** hours strictly between sunrise and sunset are "day".
+- **Hail chip** if any hour of the day passed the hail test.
+
+### Where it shows on WAPK
+
+- Hourly strip and week list: blue **Hail** tag.
+- Day details: storm badge, Day/Night conditions, "Storm energy · CAPE", "Hail: Possible in storms".
+- Current conditions: "… with possible hail"; summary warns if hail is expected later today.
+
+**One difference from the app:** the app judges *current* conditions with the day's first hour (midnight). WAPK uses the
+current hour.
+
+---
+
+## 14. The Maps screen: how it behaves
+
+### Layout
+
+- **Top left:** Settings, Fullscreen.
+- **Top centre:** satellite time bar (only while Satellite is on). On phones it sits under the Settings row.
+- **Right side rail** (bottom strip on phones):
+  - **Forecast** master button.
+  - **9 categories**, each with a type dropdown under it when active:
+
+| Category | Types |
+|---|---|
+| Wind | Wind speed, Gusts |
+| Temperature | Temperature, Dew point, Freezing level |
+| Humidity | Relative humidity, Water vapour |
+| Rain | Rain rate, Rain total, Precipitation type |
+| Storms | Thunderstorm potential (CAPE) |
+| Snow | New snow, Snow depth |
+| Clouds | Total, Low, Medium, High |
+| Solar | Solar radiation |
+| Pressure | Sea-level pressure (with isobars every 4 hPa) |
+
+  - **Particles** (animated wind) + **height picker**: Surface, 925 hPa (≈ 800 m), 850 (≈ 1.5 km), 700 (≈ 3 km),
+    500 (≈ 5.5 km), 250 hPa (≈ 10 km, jet stream). Wind, Temperature and Humidity follow the height.
+  - **Lightning**, **Radar**, **Satellite** + satellite product dropdown.
+- **Bottom:** forecast timeline (7 days, play button; plays in 3-hour jumps). Legend bottom-left (top on phones).
+- **Below the map:** lightning statistics.
+
+### Switching rule (you asked for this)
+
+- Turning on **Satellite**, choosing a **satellite product**, or turning on **Radar** → **forecast colours switch off**.
+- Choosing a **forecast category or type** → **Satellite and Radar switch off**.
+- The **Forecast** master button is the **manual override**: pressing it does *not* switch anything off. To see both,
+  turn on satellite/radar first, then press Forecast.
+
+### Zoom and area
+
+- The map cannot pan or zoom out beyond **0–55°N, 25–110°E** (the data area), so nothing blank shows.
+- Click anywhere for a popup: temperature, humidity, dew point, wind (at the chosen height), gusts, rain, precipitation
+  type, water vapour, clouds, pressure, CAPE, freezing level, snow depth.
+
+### Map layer stacking (bottom to top)
+
+Base map → forecast colours (300) → satellite (320) → PMD radar (350) → wind particles (380) → place labels (390) →
+markers.
+
+---
+
+## 15. Schedules: what runs when
+
+| What | When | Where |
+|---|---|---|
+| ECMWF new run available (00Z / 12Z) | ≈ 07:40–08:00 UTC and 19:40–20:00 UTC (≈ 1 PM / 1 AM PKT) | ECMWF |
+| Map data check/build | Every 3 hours at :25 UTC | GitHub Actions |
+| Lightning + satellite fetch | Every 5 minutes | Cloudflare Worker cron |
+| PMD radar list cache | 2 minutes in the worker; browser refreshes every 5 min | Worker / browser |
+| Satellite list refresh in browser | Every 5 minutes | Browser |
+| Lightning auto-refresh in browser | Every 15 minutes (if on) | Browser |
+| Forecast map `latest.json` re-check | Every 30 minutes while Maps is open | Browser |
+
+---
+
+## 16. Costs and free-tier limits
+
+**Everything is currently free.**
+
+| Service | Free limit | Your use |
+|---|---|---|
+| Cloudflare Pages (`wapk`, `wapk-forecast`) | Unlimited bandwidth & requests; 20,000 files per deploy; 25 MB per file | ≈ 2,120 files per data deploy |
+| Cloudflare Workers | 100,000 requests/day | Cron 288 runs/day + visitor requests |
+| Cloudflare D1 | 5 GB storage, 5 M rows read/day, 100 k rows written/day | Satellite ≈ 270 MB for 24 h; strikes small |
+| GitHub Actions (private repo) | 2,000 minutes/month | ≈ 600–750 min/month (2 full builds/day × ~10 min + quick checks) |
+| ECMWF open data | Free, CC-BY-4.0 (credit required — shown on the map) | 2 runs/day |
+| EUMETSAT View | Free | ≈ 32–72 image requests/hour |
+| Open-Meteo | Free for **non-commercial** use (10,000 calls/day) | 2 calls per page load + air quality + search |
+| PMD | Permission given | Direct image loads |
+
+**Watch out:** if WAPK becomes commercial, Open-Meteo needs a paid plan (or move the forecast pages to your own ECMWF data).
+
+---
+
+## 17. How to deploy each part
+
+### A. The website
+
+```bash
+# 1. Check the account
+npx wrangler whoami          # must say Mashhood.droid@gmail.com's Account
+
+# 2. Copy ONLY the ten site files into an empty folder (never deploy the project folder itself)
+mkdir C:\temp\wapk-dist
+copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js C:\temp\wapk-dist\
+
+# 3. Deploy
+npx wrangler pages deploy C:\temp\wapk-dist --project-name wapk --branch main
+```
+
+**Before deploying a change:** bump the `?v=` number of every changed JS/CSS file in `index.html`
+(e.g. `forecast.js?v=20261025-36` → `-37`). Otherwise browsers keep the old file.
+
+### B. The map data
+
+Normally **automatic** (GitHub). Manual options:
+
+- GitHub → Actions → Forecast map data → Run workflow (tick **force** if needed).
+- Or locally (needs Python with the pinned packages):
+
+```bash
+pip install -r pipeline/requirements.txt
+python pipeline/build_forecast.py --out D:\wapk-build\out
+npx wrangler pages deploy D:\wapk-build\out --project-name wapk-forecast --branch main
+```
+
+Build locally with temp files on D: (C: is nearly full) — set `TEMP` and `TMP` to a D: folder first.
+
+### C. The worker
+
+```bash
+cd "D:\Lightning Weather x"
+# back up worker-pk\index.js first (no git here)
+npx wrangler deploy -c wrangler-pk.jsonc
+```
+
+### D. Code backup to GitHub
+
+```bash
+cd "D:\Test Weather webapp"
+git -c "safe.directory=D:/Test Weather webapp" add -A
+git -c "safe.directory=D:/Test Weather webapp" commit -m "Describe the change"
+git -c "safe.directory=D:/Test Weather webapp" push
+```
+
+The `-c safe.directory=…` part is needed because the `.git` folder is owned by another Windows user. (The GitHub sign-in
+helper is set only for this repo, not globally.)
+
+---
+
+## 18. Common tasks (how do I…?)
+
+**Add a new forecast map field**
+1. In `build_forecast.py`: add the ECMWF parameter to the download list, add an entry to `FIELDS` (encoding + range),
+   and `write(...)` it inside the step loop.
+2. **Increase `FORMAT_VERSION`.**
+3. In `forecast.js`: add a layer to `LAYERS` (label, type, unit, field, colour stops) and put it in a `GROUPS` category.
+4. Bump `forecast.js?v=` in `index.html`, deploy the site, then run the workflow with **force**.
+
+**Change the map area**
+Edit `REGION` in `build_forecast.py`, `SATELLITE_REGION` in the worker, and `MAP_REGION` in `radar.js` — all three must
+match. Bump `FORMAT_VERSION`.
+
+**Change thunderstorm/hail thresholds**
+Edit `weather-logic.js` (and the same numbers in the Flutter app so both agree). Bump `weather-logic.js?v=`.
+
+**Add a satellite product**
+Add it to `SATELLITE_PRODUCTS` in the worker (layer name from EUMETSAT's `msg_iodc` capabilities) and to the
+`radarSatelliteProduct` dropdown in `index.html`.
+
+**See if the map data is current**
+Open https://wapk-forecast.pages.dev/latest.json → look at `run` and `generatedAt`.
+
+**See if satellite is current**
+Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite → each product's `time` and `frames`.
+
+**See worker logs live**
+`npx wrangler tail lightning-weatherx-pk-api` (inside `D:\Lightning Weather x`).
+
+---
+
+## 19. Troubleshooting
+
+| Problem | Likely cause | Fix |
+|---|---|---|
+| Forecast map stuck on an old run | GitHub run failing | GitHub → Actions → open the red run. Token expired? Make a new Cloudflare token and update `CLOUDFLARE_API_TOKEN`. |
+| Map layer button missing | Published data doesn't have that field yet | Run the workflow with **force**. Buttons hide themselves when data lacks a field. |
+| Map shows odd values after a pipeline change | Forgot to bump `FORMAT_VERSION` | Bump it, rebuild with force. |
+| "Authentication error 10000" on deploy | Wrangler logged into the wrong account | `npx wrangler logout` then `npx wrangler login` with mashhood.droid. |
+| Satellite blank or "preparing" | Worker hasn't stored that product yet, or EUMETSAT slow | Wait 5–10 min; check `/api/satellite`. |
+| Satellite history short | Table recently emptied | Fills in about 5 hours. |
+| PMD radar not showing | Usually PMD offline or simply no rain | Check `https://ffd.pmd.gov.pk/radar/manifest` → `latest_at`. Don't debug code first. |
+| Site change not visible | Browser cache | Bump `?v=` in `index.html`; Ctrl+F5. |
+| Current conditions show "Forecast model estimate" | No airport within radius or METAR older than 90 min | Normal behaviour. |
+| Open-Meteo errors | Rate limit or outage | Wait; site shows a retry message. |
+| Git says "dubious ownership" | `.git` owned by another Windows user | Use `git -c "safe.directory=D:/Test Weather webapp" …` |
+| C: drive full | Leftover temp files / browser test profiles | Build with TEMP on D:; delete old temp folders. |
+
+---
+
+## 20. Rules and gotchas to never forget
+
+1. **Deploy only the ten site files**, never the whole project folder (`.openai/` and `test.txt` are private).
+2. **Always check `npx wrangler whoami`** shows mashhood.droid before deploying.
+3. **Bump `?v=`** in `index.html` for every changed JS/CSS file.
+4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
+5. The data site **needs `404.html`** (the pipeline writes it — don't remove that code).
+6. Python's default downloader is **blocked by Cloudflare** — the pipeline sends a `User-Agent`; keep it.
+7. **Worker deploy:** `npx wrangler deploy -c wrangler-pk.jsonc` — not `npm run cf:worker:deploy`.
+8. **`/api/weather-layers` must stay** in the worker — Lightning Weather X uses it.
+9. `D:\Lightning Weather x` **has no git** — back up before editing.
+10. Keep storm/hail thresholds **identical** between `weather-logic.js` and the Flutter app.
+11. ECMWF has **no 900 hPa** and **no free visibility or official freezing level** — that's why 925 hPa and a calculated
+    freezing level are used.
+12. Only **00Z/12Z** ECMWF runs reach 7 days → map updates **twice a day**.
+13. **ECMWF credit (CC-BY-4.0)** must stay on the map.
+14. Open-Meteo is free only for **non-commercial** use.
+15. Don't change **global git settings** on your PC (repo-local only).
+
+---
+
+## 21. Open items
+
+- **Old D1 table `satellite_images`** (≈ 3 MB) is unused and can be dropped:
+  `npx wrangler d1 execute lightning-pk-strikes -c wrangler-pk.jsonc --remote --command "DROP TABLE IF EXISTS satellite_images"`
+- **Lightning Weather X site fixes** in `D:\Lightning Weather x\public` were never deployed (`npm run cf:pages:deploy`).
+- **METAR API bugs** (section 12) could be fixed at the API itself if its source is available.
+- **Possible future:** a "Thunderstorm & hail risk" map layer from the ECMWF grid (approximate — no probability or lifted
+  index in the free data).
+- GitHub warns that `ubuntu-latest` moves to Ubuntu 26 — the workflow should keep working; check the first run after.
+
+---
+
+## 22. Glossary
+
+| Term | Meaning |
+|---|---|
+| **ECMWF** | European Centre for Medium-Range Weather Forecasts — makes the IFS model |
+| **IFS** | ECMWF's global weather model |
+| **00Z / 12Z** | Model start times in UTC (midnight / noon UTC = 5 AM / 5 PM PKT) |
+| **Step** | Hours after the model start time |
+| **GRIB2** | Standard compressed file format for weather model data |
+| **hPa / pressure level** | Height measured by air pressure: 925 ≈ 800 m, 850 ≈ 1.5 km, 700 ≈ 3 km, 500 ≈ 5.5 km, 250 ≈ 10 km |
+| **CAPE** | Energy available for rising air (thunderstorm fuel), J/kg |
+| **Lifted index (LI)** | Stability; negative = unstable, ≤ −3 quite unstable |
+| **Freezing level** | Height where temperature drops to 0 °C |
+| **METAR** | Standard airport weather report |
+| **Cloudflare Pages** | Free static website hosting |
+| **Cloudflare Worker** | Small server code running on Cloudflare |
+| **D1** | Cloudflare's database |
+| **Cron** | A job that runs on a schedule |
+| **Wrangler** | Cloudflare's command-line tool |
+| **GitHub Actions** | GitHub's free scheduled computers that run the pipeline |
+| **CORS** | Browser rule that decides which sites may read data from another site |
+| **Leaflet** | The JavaScript map library |
+| **Web Mercator** | The map projection used by web maps |
