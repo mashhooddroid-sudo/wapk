@@ -36,12 +36,12 @@ STEPS = list(range(0, 145, 3)) + list(range(150, 169, 6))
 LEVELS = [925, 850, 700, 500, 250]
 # Temperature and height at these levels give the freezing level (ECMWF's own field is not open data).
 FREEZING_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300]
-SURFACE_PARAMS = ["2t", "2d", "tp", "sf", "sd", "rsn", "10u", "10v", "msl", "tcc", "lcc", "mcc", "hcc", "10fg", "mucape", "ssrd", "tcwv", "ptype", "tprate"]
+SURFACE_PARAMS = ["2t", "2d", "tp", "sf", "sd", "rsn", "10u", "10v", "msl", "tcc", "lcc", "mcc", "hcc", "10fg", "mucape", "ssrd", "tcwv", "ptype", "tprate", "sp"]
 MISSING = 255
 # Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
 # browsers never mix files cached under the old format (run files are cached as immutable for a year),
 # and the scheduled build republishes even when ECMWF's run itself has not changed.
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 
 WIND = {"encoding": "linear", "offset": -100.0, "scale": 200 / 254, "unit": "m/s"}
 TEMPERATURE = {"encoding": "linear", "offset": -80.0, "scale": 130 / 254, "unit": "°C"}
@@ -66,6 +66,8 @@ FIELDS = {
     "highcloud": PERCENT,
     "pressure": {"encoding": "linear", "offset": 940.0, "scale": 120 / 254, "unit": "hPa"},
     "cape": {"encoding": "sqrt", "scale": math.sqrt(8000) / 254, "unit": "J/kg"},
+    # Thunderstorm forecast as an ordered category: see storm_category.
+    "storm": {"encoding": "linear", "offset": 0.0, "scale": 1.0, "unit": "category"},
     "u10": WIND,
     "v10": WIND,
     **{f"{component}{level}": WIND for level in LEVELS for component in ("u", "v")},
@@ -118,6 +120,40 @@ def precip_category(ptype):
     for code, category in PRECIP_TYPES.items():
         result[np.rint(ptype) == code] = category
     result[np.isnan(ptype)] = np.nan
+    return result
+
+
+def ground_height(surface_pressure, sea_level_pressure, temperature):
+    """Ground height in metres from surface and sea-level pressure (hypsometric equation, mean layer
+    temperature taken as the 2 m temperature plus half a standard lapse over the layer)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.log(sea_level_pressure / surface_pressure)
+    height = 287.05 * (temperature + 3.0) / 9.80665 * ratio
+    return np.clip(np.nan_to_num(height, nan=0.0), 0, None)
+
+
+def storm_category(rain, cape, freezing, ground, t500, wind500):
+    """Thunderstorms by the WAPK app's rules (Weather Alert PK, weather_controller.dart; weather-logic.js),
+    so CAPE alone never paints a storm: there must be rain too.
+
+    rain is mm/h, cape J/kg (most-unstable CAPE), freezing and ground metres above sea level, t500 °C and
+    wind500 m/s. The app's "doors" need rain over 1 mm/h, or at least 0.1 mm/h with strong instability;
+    then a storm needs CAPE of at least 500 J/kg with real rain (over 0.5 mm/h), or CAPE of at least
+    2000 J/kg. ECMWF open data has no lifted index or precipitation probability, so the app's lifted-index
+    tests use CAPE alone and the model's rain stands in for the probability.
+
+    Categories: 0 none, 1 isolated (rain up to 1 mm/h), 2 scattered (1–3), 3 thunderstorms (3–4),
+    4 heavy thunderstorms (over 4), 5 thunderstorm with hail. Hail reaches the ground where the warm layer
+    below the freezing level is at most 4200 m, it is -4 °C or colder at 500 hPa and the 500 hPa wind
+    (a shear proxy) is at least 17 kt.
+    """
+    rain = np.nan_to_num(rain, nan=0.0)
+    cape = np.nan_to_num(cape, nan=0.0)
+    door = (rain > 1) | ((rain >= 0.1) & (cape >= 2000))
+    storm = door & (((rain > 0.5) & (cape >= 500)) | (cape >= 2000))
+    tier = np.select([rain <= 1, rain <= 3, rain <= 4], [1, 2, 3], 4)
+    hail = storm & (freezing - ground <= 4200) & (t500 <= -4) & (wind500 * 3.6 / 1.852 >= 17)
+    result = np.where(storm, np.where(hail, 5, tier), 0).astype(np.float32)
     return result
 
 
@@ -291,6 +327,13 @@ def build(out, steps, published_url=None):
         write("highcloud", index, get("hcc") * 100)
         write("pressure", index, get("msl") / 100)
         write("cape", index, get("mucape"))
+        # The rain over the step can hide a short downpour, so the instantaneous rate counts too.
+        storm_rain = np.fmax(np.clip(rate, 0, None), np.nan_to_num(get("tprate") * 3600, nan=0.0))
+        freezing = freezing_level([get("t", level) for level in FREEZING_LEVELS], [get("gh", level) for level in FREEZING_LEVELS], get("2t"))
+        write("storm", index, storm_category(
+            storm_rain, get("mucape"), freezing, ground_height(get("sp"), get("msl"), get("2t")),
+            get("t", 500) - 273.15, np.hypot(get("u", 500), get("v", 500)),
+        ))
         write("u10", index, get("10u"))
         write("v10", index, get("10v"))
         for level in LEVELS:
@@ -298,7 +341,7 @@ def build(out, steps, published_url=None):
             write(f"v{level}", index, get("v", level))
             write(f"t{level}", index, get("t", level) - 273.15)
             write(f"r{level}", index, np.clip(get("r", level), 0, 100))
-        write("freezing", index, freezing_level([get("t", level) for level in FREEZING_LEVELS], [get("gh", level) for level in FREEZING_LEVELS], get("2t")))
+        write("freezing", index, freezing)
 
     meta = {
         "source": "ECMWF IFS open data",

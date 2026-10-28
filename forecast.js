@@ -79,6 +79,12 @@
       note: "Snow depth is the model's snow cover; on glaciers it is capped and not a measured depth.",
       stops: [[1, "#d6ecff", 0.55], [10, "#9ccaff"], [30, "#5b8cf0"], [60, "#6c4fd0"], [120, "#a63fc0"], [250, "#e04f9c"], [500, "#fbd0e4"]],
     },
+    // Thunderstorms by the WAPK app's rules: rain and instability together, not CAPE alone (see the pipeline).
+    storm: categoryLayer({
+      label: "Thunderstorms", type: "Thunderstorms", field: "storm",
+      note: "Thunderstorms show only where the model has rain and enough instability (CAPE), using the WAPK app's rules; hail where the freezing level is low, it is cold aloft and winds aloft are strong.",
+      categories: [[1, "Isolated", "#f6d04d"], [2, "Scattered", "#f39a2d"], [3, "Thunderstorms", "#e4402d"], [4, "Heavy", "#b0186b"], [5, "With hail", "#4ee6ff"]],
+    }),
     cape: {
       label: "Thunderstorm potential", type: "Thunderstorm potential (CAPE)", unit: "CAPE, J/kg", field: "cape", transparentBelow: 100,
       note: "CAPE is the energy available for thunderstorms; storms also need a trigger.",
@@ -104,7 +110,7 @@
     { key: "temperature", label: "Temperature", icon: "thermometer", layers: ["temp", "dew", "freezing"] },
     { key: "humidity", label: "Humidity", icon: "humidity", layers: ["humidity", "tcwv"] },
     { key: "rain", label: "Rain", icon: "rain", layers: ["rain", "rainacc", "ptype"] },
-    { key: "storms", label: "Storms", icon: "bolt", layers: ["cape"] },
+    { key: "storms", label: "Storms", icon: "bolt", layers: ["storm", "cape"] },
     { key: "snow", label: "Snow", icon: "snowflake", layers: ["snowacc", "snowdepth"] },
     { key: "clouds", label: "Clouds", icon: "cloud", layers: ["cloud", "lowcloud", "midcloud", "highcloud"] },
     { key: "solar", label: "Solar", icon: "sun", layers: ["solar"] },
@@ -145,7 +151,8 @@
       cache: new Map(),
       inflight: new Map(),
       enabled: saved.enabled !== false,
-      layer: (LAYERS[saved.layer] || saved.layer === "none") ? saved.layer : "wind",
+      // Storms used to be CAPE only; anyone who had it open gets the new thunderstorm layer once.
+      layer: saved.layer === "cape" && !saved.stormLayer ? "storm" : (LAYERS[saved.layer] || saved.layer === "none") ? saved.layer : "wind",
       hour: 0,
       active: false,
       renderId: 0,
@@ -156,7 +163,7 @@
       theme: options.theme || "dark",
     };
     // The type last chosen in each category, so going back to a category restores it.
-    state.lastType = Object.fromEntries(GROUPS.map((group) => [group.key, group.layers.includes(saved.lastType?.[group.key]) ? saved.lastType[group.key] : group.layers[0]]));
+    state.lastType = Object.fromEntries(GROUPS.map((group) => [group.key, group.layers.includes(saved.lastType?.[group.key]) && (saved.stormLayer || group.key !== "storms") ? saved.lastType[group.key] : group.layers[0]]));
     if (LAYERS[state.layer]) state.lastType[groupOf(state.layer).key] = state.layer;
     const rail = buildRail();
     if (WIND_LEVELS[saved.level]) els.level.value = saved.level;
@@ -308,7 +315,7 @@
 
     function savePreferences() {
       try {
-        localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ enabled: state.enabled, layer: state.layer, lastType: state.lastType, level: els.level.value, particles: els.wind.checked }));
+        localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ enabled: state.enabled, layer: state.layer, lastType: state.lastType, level: els.level.value, particles: els.wind.checked, stormLayer: true }));
       } catch {
         // Choices still apply for this visit when browser storage is unavailable.
       }
@@ -672,7 +679,7 @@
       const level = els.level.value;
       const tempField = layerField(LAYERS.temp, level);
       const humidityField = layerField(LAYERS.humidity, level);
-      const fields = [tempField, humidityField, "dew", `u${level}`, `v${level}`, "gust", "precip", "cloud", "pressure", "cape", "freezing", "snowdepth", "tcwv", "ptype"].filter((field) => state.meta.fields[field]);
+      const fields = [tempField, humidityField, "dew", `u${level}`, `v${level}`, "gust", "precip", "cloud", "pressure", "cape", "storm", "freezing", "snowdepth", "tcwv", "ptype"].filter((field) => state.meta.fields[field]);
       let data;
       try {
         data = await loadFields(fields);
@@ -709,6 +716,8 @@
       if (!Number.isNaN(cloud)) lines.push(`Clouds ${Math.round(cloud)}%`);
       const pressure = at("pressure");
       if (!Number.isNaN(pressure)) lines.push(`Pressure ${Math.round(pressure)} hPa`);
+      const storm = LAYERS.storm.categories.find(([value]) => value === Math.round(at("storm", true)));
+      if (storm) lines.push(storm[0] === 5 ? "Thunderstorm with hail" : storm[0] === 3 ? "Thunderstorms" : `${storm[1]} thunderstorm${storm[0] === 1 ? "" : "s"}`);
       const cape = at("cape");
       if (!Number.isNaN(cape)) lines.push(`Thunderstorm energy (CAPE) ${Math.round(cape)} J/kg`);
       const freezing = at("freezing");
