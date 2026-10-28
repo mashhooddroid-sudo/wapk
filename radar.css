@@ -81,6 +81,9 @@
 .rail-note strong { color: var(--ink); }
 .fire-key { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 3px; }
 .fire-key span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.rail-fires-window { margin: 0 0 4px; }
+.rail-fires-window select { width: 100%; }
+.rail-fires-window[hidden] { display: none !important; }
 .fire-key i { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px #3a0b0066; }
 .rail-select select { min-height: 30px; padding: 4px 6px; border-radius: 8px; font-size: 11.5px; }
 /* Type dropdown under the active category, like Windy's sub-menu. */
@@ -274,6 +277,8 @@
   .rail-select select { width: 92px; }
   .rail-type { margin: 0; }
   .rail-type select { width: 128px; }
+  .rail-fires-window { margin: 0; }
+  .rail-fires-window select { width: 116px; }
   .map-legend { top: 56px; bottom: auto; left: 8px; width: min(300px, calc(100% - 16px)); }
   .map-timeline { left: 8px; right: 8px; bottom: 8px; height: 56px; padding-right: 14px; }
   .map-corner-left { top: 8px; left: 8px; }

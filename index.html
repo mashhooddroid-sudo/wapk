@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261028-46">
-  <link rel="stylesheet" href="radar.css?v=20261028-38">
+  <link rel="stylesheet" href="radar.css?v=20261028-39">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -178,6 +178,7 @@
             <button id="radarStrikesToggle" class="rail-item" type="button" aria-pressed="true"><span data-icon="bolt"></span><span id="radarStrikesLabel">Lightning</span></button>
             <label class="rail-item rail-check"><input id="radarPmdToggle" type="checkbox" checked><span data-icon="radar"></span><span>Radar</span></label>
             <label class="rail-item rail-check"><input id="radarFiresToggle" type="checkbox"><span data-icon="fire"></span><span>Fires</span></label>
+            <label id="radarFiresWindowWrap" class="rail-select rail-fires-window" hidden><span class="radar-sr-only">Fires seen in the last</span><select id="radarFiresWindow" aria-label="Fires seen in the last" title="Fires seen in the last"><option value="24" selected>Last 24 hours</option><option value="48">Last 48 hours</option><option value="72">Last 72 hours</option></select></label>
             <p id="radarFiresNote" class="rail-note" aria-live="polite" hidden></p>
             <label class="rail-item rail-check"><input id="radarSatelliteToggle" type="checkbox"><span data-icon="satellite"></span><span>Satellite</span></label>
             <label class="rail-select"><span class="radar-sr-only">Satellite image</span><select id="radarSatelliteProduct" aria-label="Satellite image"><option value="ir108" selected>Infrared</option><option value="vis006">Visible</option><option value="wv062">Water vapour</option><option value="natural">Natural colour</option><option value="airmass">Airmass</option><option value="dust">Dust</option><option value="convection">Convection</option><option value="rain">Rain rate</option></select></label>
@@ -263,7 +264,7 @@
   <script src="weather-logic.js?v=20261025-1"></script>
   <script src="app.js?v=20261028-41"></script>
   <script src="forecast.js?v=20261025-37"></script>
-  <script src="radar.js?v=20261028-40"></script>
+  <script src="radar.js?v=20261028-41"></script>
   <script src="health.js?v=20261028-8"></script>
   <script src="views.js?v=20261028-11"></script>
   <script src="effects.js?v=glass-1"></script>

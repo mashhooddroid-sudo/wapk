@@ -182,7 +182,7 @@ Make a new one the same way and paste it into the secret.
 | "Current location" name | BigDataCloud reverse geocoding (free client endpoint) | Direct | — |
 | **Forecast map layers** | **ECMWF IFS open data, raw GRIB2 files** — *not* Open-Meteo | Your pipeline → `wapk-forecast.pages.dev` | New run twice a day (00Z, 12Z) |
 | Satellite | EUMETSAT Meteosat (Indian Ocean service, satellite at 45.5°E) | Your worker stores images in D1 | New image every 15 min, usually 30–50 min old |
-| **Fires** | **NASA FIRMS** active fires — VIIRS (Suomi-NPP, NOAA-20, NOAA-21) and MODIS, public "South Asia 24h" CSV files (no key) | Worker merges them every 30 min, serves `/api/fires` | Satellites pass ~1–2 AM and ~1–2 PM PKT; NASA publishes within ~3 h |
+| **Fires** | **NASA FIRMS** active fires — VIIRS (Suomi-NPP, NOAA-20, NOAA-21) and MODIS, public "South Asia 7d" CSV files (no key), last 72 h kept | Worker merges them every 30 min, serves `/api/fires` | Satellites pass ~1–2 AM and ~1–2 PM PKT; NASA publishes within ~3 h |
 | PMD radar | PMD Flood Forecasting Division (ffd.pmd.gov.pk) | Worker proxies the list; images load straight from PMD | 10 min (sri, cappi01), hourly (rain12) |
 | Lightning | Your lightning-alerts worker `/buffer` | Your PK worker stores in D1 | Every 5 min |
 | **Pollen** (Health) | **PMD** — Islamabad: https://weather.gov.pk/rnd/pollen-data · Lahore: https://ffd.pmd.gov.pk/pollen | Worker reads both pages every 3 h, stores one report per station and PMD date, serves `/api/pollen` | Islamabad daily; Lahore daily during the pollen season |
@@ -386,7 +386,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `GET /api/search` | Place search | Lightning Weather X |
 | `GET /api/weather-layers` | Old EUMETSAT layer list | **Lightning Weather X — keep it** |
 | `GET /api/pmd-radar` | PMD radar list (manifest), cached 2 min | WAPK Maps |
-| `GET /api/fires` | Fires of the last 24 h in the map area: compact rows `[lat, lon, minutesSinceEpoch, frpMW, confidence 0/1/2, satelliteIndex, night]` (cached 10 min) | WAPK Maps |
+| `GET /api/fires?hours=24\|48\|72` | Fires of the last 24, 48 or 72 h (default 24) in the map area: compact rows `[lat, lon, minutesSinceEpoch, frpMW, confidence 0/1/2, satelliteIndex, night]` (cached 10 min) | WAPK Maps |
 | `GET /api/pollen` | `stations[]` (Islamabad, Lahore): latest report + up to 30 days of history each (cached 15 min). Top-level `latest`/`station`/`history` repeat Islamabad for older pages. | WAPK Health |
 | `GET /api/satellite` | Satellite products, their stored times (`frames`) and image addresses | WAPK Maps |
 | `GET /api/satellite/<product>?t=<time>` | One stored satellite image (cached 1 day in browsers) | WAPK Maps |
@@ -396,8 +396,8 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 1. **Lightning:** fetch the lightning-alerts `/buffer`, keep strikes inside Pakistan from the last 24 h, store in D1.
 2. **Satellite:** fetch up to **6** images (3 at a time) from EUMETSAT: newest first, then fill missing hourly images
    of the past 24 h; delete images older than 24 h.
-4. **Fires:** if the snapshot is more than **30 minutes** old, download the 4 FIRMS files, keep fires inside the map area
-   from the last 24 h, and replace the snapshot.
+4. **Fires:** if the snapshot is more than **30 minutes** old, download the 4 FIRMS 7-day files (≈ 3.2 MB), keep fires inside the
+   map area from the last 72 h, and replace the snapshot.
 3. **Pollen:** for each station (Islamabad, Lahore) whose last read is more than **3 hours** old, read its PMD page,
    store/replace that PMD date's report, delete reports older than **120 days**. One station failing doesn't stop the other.
 
@@ -408,7 +408,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `strikes` | One row per strike (id, lat, lon, timestamp, raw JSON) |
 | `ingest_runs` | A log of each strike refresh |
 | `satellite_frames` | Satellite images: product, time, image bytes (key = product + time) |
-| `fire_snapshot` | One row (`id = 'latest'`): `fetched_at` + JSON of all fires (≈ 160 KB) |
+| `fire_snapshot` | One row (`id = 'latest'`): `fetched_at` + JSON of all fires of the last 72 h (≈ 0.5–0.8 MB; D1's row limit is 2 MB) |
 | `pollen_daily` | One PMD pollen report per station and date: `station`, `report_date` (key together), `label`, `fetched_at`, `data` (JSON: sites, types, notes, thresholds) |
 | `pollen_reports` | **Old, unused** (first Islamabad-only version, 1 row). Safe to delete. |
 | `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
@@ -451,24 +451,30 @@ by hour (waiting for each image to load), holds on the newest, then loops.
 - **What:** hotspots detected by satellites' heat sensors — in Pakistan mostly **crop-residue burning** (Oct–Nov and
   Apr–May, the main cause of Punjab smog), plus forest/brush fires and industrial heat (e.g. gas flares).
 - **Source:** NASA FIRMS public files (no account key needed):
-  - `suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_South_Asia_24h.csv` (VIIRS S-NPP, 375 m)
-  - `noaa-20-viirs-c2/csv/J1_VIIRS_C2_South_Asia_24h.csv` (VIIRS NOAA-20)
-  - `noaa-21-viirs-c2/csv/J2_VIIRS_C2_South_Asia_24h.csv` (VIIRS NOAA-21)
-  - `modis-c6.1/csv/MODIS_C6_1_South_Asia_24h.csv` (MODIS Terra/Aqua, 1 km)
+  - `suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_South_Asia_7d.csv` (VIIRS S-NPP, 375 m)
+  - `noaa-20-viirs-c2/csv/J1_VIIRS_C2_South_Asia_7d.csv` (VIIRS NOAA-20)
+  - `noaa-21-viirs-c2/csv/J2_VIIRS_C2_South_Asia_7d.csv` (VIIRS NOAA-21)
+  - `modis-c6.1/csv/MODIS_C6_1_South_Asia_7d.csv` (MODIS Terra/Aqua, 1 km)
   all under `https://firms.modaps.eosdis.nasa.gov/data/active_fire/`.
 - **Coverage:** FIRMS "South Asia" region ≈ **54–102°E, 6–40°N** (Pakistan, India, Afghanistan, eastern Iran, Nepal,
   Bangladesh…). The western and northern parts of the map (Arabia, Turkey, Central Asia) have no fire data.
 - **Freshness:** each satellite passes about twice a day (≈ 1–2 AM and 1–2 PM PKT); NASA publishes within ~3 hours.
   So the newest fire is usually 3–12 hours old.
-- **On the map:** **Fires** button in the rail (off by default; remembered in `wapk.firesVisible`). Each fire is a dot:
-  size = fire radiative power (strength, MW), colour = age (red < 6 h, orange 6–12 h, yellow 12–24 h), faint = low
-  confidence. Under the button: count + colour key. Click a fire: time seen, day/night pass, satellite, strength,
-  confidence. Typical: ~4,000–4,500 fires in the area in 24 h in late October, ~2,400 in Pakistan.
+- **On the map:** **Fires** button in the rail (off by default; remembered in `wapk.firesVisible`), with a
+  **Last 24 / 48 / 72 hours** dropdown under it (remembered in `wapk.firesHours`; each choice asks the worker for
+  `?hours=`). Each fire is a dot: size = fire radiative power (strength, MW), colour = age (red < 6 h, orange 6–12 h,
+  yellow 12–24 h, tan 1–2 days, grey 2–3 days), faint = low confidence. Under the button: count + colour key. Click a fire: time seen, day/night pass, satellite, strength,
+  confidence. Typical: ~4,000–4,500 fires in the area in 24 h in late October, ~2,400 in Pakistan; ~12,000 in 72 h.
+- **Why the 24 h count sometimes drops a lot:** the window counts back from *now*. Most crop fires are seen on the
+  afternoon passes (~12–2 PM PKT). If NASA is late publishing today's passes, yesterday's afternoon fires pass 24 h
+  before new ones arrive and only night detections are left (e.g. 28 Oct 2026: 685 instead of ~4,400). Pick 48 h or
+  72 h to still see them; the count recovers within 30 min of NASA publishing.
 - **Layering:** fires have their own canvas pane at z-index **410** — above Leaflet's overlay pane (400), whose full-map
   canvas would otherwise swallow fire clicks. Clicks between fires still open the forecast popup.
 - **Not part of the forecast/satellite switching rule:** fires are dots, like lightning, and stay on with any layer.
-- **More history or a key:** FIRMS also has 48h and 7d files (same paths, `_48h` / `_7d`). A free FIRMS MAP_KEY would
-  allow the area API and WMS, but isn't needed now.
+- **More history or a key:** the 7d files hold up to 7 days; raising the 72 h limit (`FIRE_MAX_AGE_MS`,
+  `FIRE_WINDOWS_HOURS` in the worker and radar.js) would grow the snapshot towards D1's 2 MB row limit. A free FIRMS
+  MAP_KEY would allow the area API and WMS, but isn't needed now.
 
 ---
 
@@ -833,7 +839,7 @@ place labels (390) → Leaflet overlays (400) → fires (410) → markers.
 | EUMETSAT View | Free | ≈ 32–72 image requests/hour |
 | Open-Meteo | Free for **non-commercial** use (10,000 calls/day) | 2 calls per page load + air quality + search; Health adds 2 (weather + air quality) |
 | PMD website | Public page | One read every 3 hours by the worker |
-| NASA FIRMS | Public files, free | 4 files (≈ 400 KB) every 30 min |
+| NASA FIRMS | Public files, free | 4 files (≈ 3.2 MB) every 30 min |
 | PMD | Permission given | Direct image loads |
 
 **Watch out:** if WAPK becomes commercial, Open-Meteo needs a paid plan (or move the forecast pages to your own ECMWF data).

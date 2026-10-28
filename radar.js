@@ -19,6 +19,16 @@
   const PMD_RADAR_REFRESH_MS = 5 * 60 * 1000;
   const FIRES_REFRESH_MS = 30 * 60 * 1000;
   const FIRES_VISIBLE_KEY = "wapk.firesVisible";
+  const FIRES_HOURS_KEY = "wapk.firesHours";
+  const FIRE_WINDOWS_HOURS = [24, 48, 72];
+  // Colour by how long ago a fire was seen; the key shows the bands inside the chosen window.
+  const FIRE_AGE_BANDS = [
+    { upTo: 6, colour: "#ff3b1f", label: "< 6 h" },
+    { upTo: 12, colour: "#ff8a1f", label: "6–12 h" },
+    { upTo: 24, colour: "#f2c14e", label: "12–24 h" },
+    { upTo: 48, colour: "#b9855a", label: "1–2 days" },
+    { upTo: Infinity, colour: "#8c8c8c", label: "2–3 days" },
+  ];
   const STRIKES_VISIBLE_KEY = "wapk.lightningVisible";
   // A frame older than three update cycles (at least 30 minutes) means that radar is offline.
   const PMD_STALE_CYCLES = 3;
@@ -59,6 +69,8 @@
     satelliteToggle: document.getElementById("radarSatelliteToggle"),
     firesToggle: document.getElementById("radarFiresToggle"),
     firesNote: document.getElementById("radarFiresNote"),
+    firesWindowWrap: document.getElementById("radarFiresWindowWrap"),
+    firesWindow: document.getElementById("radarFiresWindow"),
     satelliteBar: document.getElementById("radarSatelliteBar"),
     satellitePlay: document.getElementById("radarSatellitePlay"),
     satelliteSlider: document.getElementById("radarSatelliteSlider"),
@@ -347,6 +359,8 @@
     state.fireRenderer = L.canvas({ pane: "fires", padding: 0.3 });
     state.fireLayer = L.layerGroup();
     els.firesToggle.checked = readFiresPreference();
+    els.firesWindow.value = String(readFiresHours());
+    els.firesWindowWrap.hidden = !els.firesToggle.checked;
     if (els.firesToggle.checked) state.fireLayer.addTo(state.map);
     state.strikeLayer = L.layerGroup();
     setStrikesVisible(readStrikesPreference(), false);
@@ -451,6 +465,7 @@
 
     els.firesToggle.addEventListener("change", () => {
       saveFiresPreference(els.firesToggle.checked);
+      els.firesWindowWrap.hidden = !els.firesToggle.checked;
       if (els.firesToggle.checked) {
         state.fireLayer.addTo(state.map);
         if (!state.fires || Date.now() - (state.firesFetchAt || 0) >= FIRES_REFRESH_MS) fetchFires();
@@ -459,6 +474,11 @@
         state.map.removeLayer(state.fireLayer);
         renderFiresNote();
       }
+    });
+
+    els.firesWindow.addEventListener("change", () => {
+      saveFiresHours(Number(els.firesWindow.value));
+      fetchFires();
     });
 
     els.satelliteToggle.addEventListener("change", () => {
@@ -1178,15 +1198,21 @@
 
   async function fetchFires() {
     state.firesFetchAt = Date.now();
+    const request = (state.firesRequest = (state.firesRequest || 0) + 1);
+    const hours = Number(els.firesWindow.value) || 24;
+    els.firesNote.hidden = false;
     els.firesNote.textContent = "Loading fires…";
     try {
-      const response = await fetchWithTimeout(apiUrl("/api/fires"), 30_000);
+      const response = await fetchWithTimeout(apiUrl(`/api/fires?hours=${hours}`), 30_000);
       if (!response.ok) throw new Error(`fires returned ${response.status}`);
       const payload = await response.json();
       if (!payload?.success || !Array.isArray(payload.fires)) throw new Error("fire data is unavailable");
-      state.fires = payload;
+      // A newer request (another window picked meanwhile) wins.
+      if (request !== state.firesRequest) return;
+      state.fires = { ...payload, hours: payload.hours || hours };
       renderFires();
     } catch (error) {
+      if (request !== state.firesRequest) return;
       els.firesNote.textContent = "Fires unavailable";
       state.firesFetchAt = 0;
     }
@@ -1202,7 +1228,7 @@
     state.fires.fires.forEach(([lat, lon, minutes, frp, confidence, satIndex, night]) => {
       const at = minutes * 60000;
       const hours = (now - at) / 3_600_000;
-      const colour = hours <= 6 ? "#ff3b1f" : hours <= 12 ? "#ff8a1f" : "#f2c14e";
+      const colour = FIRE_AGE_BANDS.find((band) => hours <= band.upTo).colour;
       const marker = L.circleMarker([lat, lon], {
         renderer: state.fireRenderer,
         radius: 2.5 + Math.min(6, Math.sqrt(frp || 0) / 1.6),
@@ -1246,10 +1272,16 @@
     els.firesNote.replaceChildren();
     const count = document.createElement("strong");
     count.textContent = state.fires.fires.length.toLocaleString();
-    els.firesNote.append(count, " in 24 h");
+    const windowHours = state.fires.hours || 24;
+    els.firesNote.append(count, ` in ${windowHours} h`);
     const key = document.createElement("span");
     key.className = "fire-key";
-    [["#ff3b1f", "< 6 h"], ["#ff8a1f", "6–12 h"], ["#f2c14e", "12–24 h"]].forEach(([colour, label]) => {
+    let from = 0;
+    FIRE_AGE_BANDS.filter((band) => {
+      const shown = from < windowHours;
+      from = band.upTo;
+      return shown;
+    }).forEach(({ colour, label }) => {
       const item = document.createElement("span");
       const dot = document.createElement("i");
       dot.style.background = colour;
@@ -1258,6 +1290,23 @@
     });
     els.firesNote.append(key);
     if (newest) els.firesNote.title = `Newest detection ${formatAge(newest)}. Satellites pass about twice a day; NASA publishes within ~3 hours.`;
+  }
+
+  function readFiresHours() {
+    try {
+      const hours = Number(localStorage.getItem(FIRES_HOURS_KEY));
+      return FIRE_WINDOWS_HOURS.includes(hours) ? hours : 24;
+    } catch {
+      return 24;
+    }
+  }
+
+  function saveFiresHours(hours) {
+    try {
+      localStorage.setItem(FIRES_HOURS_KEY, String(hours));
+    } catch {
+      // The choice still applies for this visit.
+    }
   }
 
   function readFiresPreference() {
