@@ -67,19 +67,44 @@
     ? '<g class="icon-moon"><path d="M73 16a19 19 0 1 0 12 29 21 21 0 0 1-12-29Z" fill="#C2DAF3" stroke="#94B7D9" stroke-width="1.5" stroke-linejoin="round"/><path d="m84 14 1.5 4.5L90 20l-4.5 1.5L84 26l-1.5-4.5L78 20l4.5-1.5Z" fill="#E7F5FF"/></g>'
     : '<g class="icon-moon"><path d="M58 14a34 34 0 1 0 25 47A38 38 0 0 1 58 14Z" fill="#C2DAF3" stroke="#94B7D9" stroke-width="2" stroke-linejoin="round"/><path d="m76 13 2.5 7.5L86 23l-7.5 2.5L76 33l-2.5-7.5L66 23l7.5-2.5Z" fill="#D4E9FA"/><path d="m87 40 1.5 4.5L93 46l-4.5 1.5L87 52l-1.5-4.5L81 46l4.5-1.5Z" fill="#E5F4FF"/></g>';
 
-  const cloud = (storm = false) => `<g class="icon-cloud"><path d="M24 66a16 16 0 0 1-1.7-31.9A24 24 0 0 1 67 30a18 18 0 1 1 8 36Z" fill="${storm ? "#829BB4" : "#EEF7FF"}" stroke="${storm ? "#69839E" : "#CCDFF0"}" stroke-width="1.6"/><path d="M25 38a20.5 20.5 0 0 1 37-5" fill="none" stroke="${storm ? "#B9CDDE" : "#FFFFFF"}" stroke-width="3" stroke-linecap="round" opacity=".8"/></g>`;
+  // Clouds: light, grey (overcast) or dark (storm). `back` draws a second cloud behind for overcast skies.
+  const CLOUD_TONES = {
+    light: ["#EEF7FF", "#CCDFF0", "#FFFFFF"],
+    grey: ["#C9D6E3", "#A9BCCF", "#E4ECF4"],
+    storm: ["#7F95AC", "#647C95", "#A9BDD0"],
+    severe: ["#5E7189", "#4A5C73", "#8EA2B8"],
+  };
+  const cloud = (tone = "light", back = false) => {
+    const [fill, stroke, shine] = CLOUD_TONES[tone] || CLOUD_TONES.light;
+    const behind = back ? '<path transform="translate(-10 4)" d="M58 44a13 13 0 0 1 1.5-25.9A19 19 0 0 1 93 22a12 12 0 0 1-2 22Z" fill="#B7C7D8" stroke="#9AAFC4" stroke-width="1.4"/>' : "";
+    return `<g class="icon-cloud">${behind}<path d="M24 66a16 16 0 0 1-1.7-31.9A24 24 0 0 1 67 30a18 18 0 1 1 8 36Z" fill="${fill}" stroke="${stroke}" stroke-width="1.6"/><path d="M25 38a20.5 20.5 0 0 1 37-5" fill="none" stroke="${shine}" stroke-width="3" stroke-linecap="round" opacity=".8"/></g>`;
+  };
 
-  const rain = (heavy = false) => `<g class="icon-rain" fill="none" stroke="#8CAEE2" stroke-width="${heavy ? 4 : 3}" stroke-linecap="round"><path d="m30 74-4 8m22-8-4 8m22-8-4 8"/>${heavy ? '<path d="m39 85-2 4m20-4-2 4" stroke-width="3"/>' : ""}</g>`;
+  // Precipitation sits under the cloud on a few fixed spots, so the count shows the intensity.
+  const SPOTS = { 1: [[48, 79]], 2: [[37, 77], [59, 77]], 3: [[30, 76], [48, 80], [66, 76]], 5: [[28, 75], [46, 75], [64, 75], [37, 87], [55, 87]] };
+  const drop = ([x, y], scale = 1) => `<path d="M${x} ${y - 7 * scale}c${3.2 * scale} ${4.6 * scale} ${4.8 * scale} ${7 * scale} ${4.8 * scale} ${9 * scale}a${4.8 * scale} ${4.8 * scale} 0 0 1-${9.6 * scale} 0c0-${2 * scale} ${1.6 * scale}-${4.4 * scale} ${4.8 * scale}-${9 * scale}Z"/>`;
+  const flake = ([x, y], r = 5.5) => `<path d="M${x} ${y - r}v${2 * r}M${x - r * 0.87} ${y - r / 2}l${r * 1.73} ${r}M${x - r * 0.87} ${y + r / 2}l${r * 1.73}-${r}"/>`;
+  const rain = (count) => `<g class="icon-rain" fill="#6FA3EA" stroke="#4F86D6" stroke-width="1">${SPOTS[count].map((spot) => drop(spot, count === 5 ? 0.85 : 1)).join("")}</g>`;
+  const drizzle = (count) => `<g class="icon-rain" fill="#8DB6E8">${SPOTS[count].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="2.6"/>`).join("")}</g>`;
+  const snow = (count) => `<g class="icon-snow" fill="none" stroke="#7FB0DA" stroke-width="2.2" stroke-linecap="round">${SPOTS[count].map((spot) => flake(spot, count === 5 ? 4.6 : 5.5)).join("")}</g>`;
+  const snowGrains = '<g class="icon-snow" fill="#F4FAFF" stroke="#9CC1E0" stroke-width="1.2"><circle cx="32" cy="77" r="2.6"/><circle cx="48" cy="81" r="2.6"/><circle cx="64" cy="77" r="2.6"/><circle cx="40" cy="88" r="2.2"/><circle cx="56" cy="88" r="2.2"/></g>';
+  // Sleet: rain and snow together.
+  const sleet = `<g class="icon-rain" fill="#6FA3EA" stroke="#4F86D6" stroke-width="1">${drop([30, 76])}${drop([66, 76])}</g><g class="icon-snow" fill="none" stroke="#7FB0DA" stroke-width="2.2" stroke-linecap="round">${flake([48, 81])}</g>`;
+  // Freezing rain or drizzle: drops over an icy ground line with icicles.
+  const ice = '<g class="icon-ice" fill="#DDF1FF" stroke="#7FB8E0" stroke-width="1.4" stroke-linejoin="round"><path d="M22 88h52"/><path d="M30 88l2 6 2-6M46 88l2 7 2-7M62 88l2 6 2-6"/></g>';
+  const hail = '<g class="icon-hail" fill="#F3FAFF" stroke="#8FB4D4" stroke-width="1.6"><circle cx="30" cy="77" r="4.4"/><circle cx="66" cy="77" r="4.4"/><circle cx="38" cy="89" r="3.6"/><circle cx="58" cy="89" r="3.6"/></g>';
+  const fog = (dense = false) => `<g class="icon-fog" fill="none" stroke="#9FBBD1" stroke-width="${dense ? 3.6 : 3}" stroke-linecap="round"><path d="M13 72h47m8 0h13M20 81h11m8 0h37${dense ? "M27 90h37" : ""}"/></g>`;
+  const mist = '<g class="icon-fog" fill="none" stroke="#A9C3D8" stroke-width="3" stroke-linecap="round" opacity=".9"><path d="M16 40h44m8 0h12M10 52h20m8 0h48M18 64h52M26 76h12m8 0h30"/></g>';
+  const frost = '<g fill="none" stroke="#7FB0DA" stroke-width="2" stroke-linecap="round">' + flake([80, 80], 6) + "</g>";
+  const bolt = (big = false) => big
+    ? '<path class="icon-bolt" d="m52 50-18 27h13l-5 19 23-31H51l8-15Z" fill="#FFC94D" stroke="#E8A93A" stroke-width="1.5" stroke-linejoin="round"/>'
+    : '<path class="icon-bolt" d="m51 55-15 23h12l-4 17 20-28H51l7-12Z" fill="#F4C66D" stroke="#E8B552" stroke-width="1.5" stroke-linejoin="round"/>';
+  // A small bolt beside the precipitation, for storms with hail.
+  const sideBolt = '<path class="icon-bolt" d="m50 64-9 13h7l-3 10 12-16h-7l4-7Z" fill="#FFC94D" stroke="#E8A93A" stroke-width="1.3" stroke-linejoin="round"/>';
+  const peek = (daylight) => (daylight ? sun(true) : moon(true));
 
-  const drizzle = '<g class="icon-rain" fill="#91B6E5"><circle cx="29" cy="76" r="2.4"/><circle cx="48" cy="76" r="2.4"/><circle cx="67" cy="76" r="2.4"/><circle cx="38" cy="86" r="2"/><circle cx="57" cy="86" r="2"/></g>';
-
-  const snow = '<g class="icon-snow" fill="none" stroke="#93B9D6" stroke-width="2" stroke-linecap="round"><path d="M28 73v12m-5.2-9 10.4 6m-10.4 0 10.4-6M48 78v12m-5.2-9 10.4 6m-10.4 0 10.4-6M68 73v12m-5.2-9 10.4 6m-10.4 0 10.4-6"/></g>';
-
-  const fog = '<g class="icon-fog" fill="none" stroke="#9FBBD1" stroke-width="3" stroke-linecap="round"><path d="M13 72h47m8 0h13M20 81h11m8 0h37M27 90h37"/></g>';
-
-  const bolt = '<path class="icon-bolt" d="m51 55-15 23h12l-4 17 20-28H51l7-12Z" fill="#F4C66D" stroke="#E8B552" stroke-width="1.5" stroke-linejoin="round"/>';
-
-  function weather(code, isDay = true) {
+  // `hail` marks a storm hour or day where hail may reach the ground (see weather-logic.js).
+  function weather(code, isDay = true, hailPossible = false) {
     const value = Number(code);
     const daylight = isDay !== false && isDay !== 0;
     let kind = "cloudy";
@@ -90,23 +115,55 @@
       artwork = daylight ? sun() : moon();
     } else if (value === 1 || value === 2) {
       kind = "partly-cloudy";
-      artwork = (daylight ? sun(true) : moon(true)) + cloud();
-    } else if (value >= 44 && value <= 48) {
+      artwork = value === 1
+        ? `<g transform="translate(-14 10) scale(1.15)">${peek(daylight)}</g><g transform="translate(26 30) scale(.62)">${cloud()}</g>`
+        : peek(daylight) + cloud();
+    } else if (value === 3) {
+      kind = "overcast";
+      artwork = cloud("grey", true);
+    } else if (value === 44) {
+      kind = "mist";
+      artwork = (daylight ? `<g opacity=".75">${sun(true)}</g>` : "") + mist;
+    } else if (value >= 45 && value <= 48) {
       kind = "fog";
-      artwork = cloud() + fog;
-    } else if ([51, 53, 55, 56, 57].includes(value)) {
+      artwork = cloud("grey") + fog(value === 46 || value === 47) + (value === 48 ? frost : "");
+    } else if ([51, 53, 55].includes(value)) {
       kind = "drizzle";
-      artwork = cloud() + drizzle;
-    } else if ([61, 63, 65, 66, 67, 80, 81, 82].includes(value)) {
+      artwork = cloud() + drizzle(value === 51 ? 3 : 5);
+    } else if (value === 56 || value === 57) {
+      kind = "freezing-drizzle";
+      artwork = cloud("grey") + drizzle(3) + ice;
+    } else if ([61, 63, 65].includes(value)) {
       kind = "rain";
-      artwork = cloud() + rain([65, 67, 82].includes(value));
-    } else if ([71, 73, 75, 77, 85, 86].includes(value)) {
+      artwork = cloud(value === 61 ? "light" : "grey") + rain({ 61: 2, 63: 3, 65: 5 }[value]);
+    } else if (value === 66 || value === 67) {
+      // The app also uses these for snow falling at 2–4 °C, so they read as sleet.
+      kind = "sleet";
+      artwork = cloud("grey") + sleet + (value === 67 ? ice : "");
+    } else if ([80, 81, 82].includes(value)) {
+      kind = "showers";
+      artwork = peek(daylight) + cloud(value === 82 ? "grey" : "light") + rain({ 80: 2, 81: 3, 82: 5 }[value]);
+    } else if ([71, 73, 75].includes(value)) {
       kind = "snow";
-      artwork = cloud() + snow;
+      artwork = cloud(value === 75 ? "grey" : "light") + snow({ 71: 2, 73: 3, 75: 5 }[value]);
+    } else if (value === 77) {
+      kind = "snow-grains";
+      artwork = cloud() + snowGrains;
+    } else if (value === 85 || value === 86) {
+      kind = "snow-showers";
+      artwork = peek(daylight) + cloud() + snow(value === 85 ? 2 : 3);
     } else if (value >= 95 && value <= 99) {
-      // Storm tiers 95–99 differ by rain amount (hail is shown separately), so heavier tiers get heavier rain.
-      kind = "thunder";
-      artwork = cloud(true) + rain(value >= 97) + bolt;
+      // Storm tiers 95–99 differ by rain amount: an isolated storm shows the sun, heavier ones a darker sky.
+      if (hailPossible) {
+        kind = "hail";
+        artwork = cloud("severe") + hail + sideBolt;
+      } else if (value === 95) {
+        kind = "thunder";
+        artwork = peek(daylight) + cloud("storm") + bolt();
+      } else {
+        kind = "thunder";
+        artwork = cloud(value === 99 ? "severe" : "storm") + (value === 96 ? "" : rain(2)) + bolt(value === 99);
+      }
     }
 
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" aria-hidden="true" focusable="false" class="weather-icon weather-icon--${kind}">${artwork}</svg>`;

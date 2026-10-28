@@ -20,7 +20,7 @@
     95: 'Isolated thunderstorm', 96: 'Scattered thunderstorms', 97: 'Thunderstorms', 99: 'Heavy thunderstorms'
   };
   const condition = (code) => weatherNames[code] || 'Conditions unavailable';
-  const icon = (code, isDay = true) => window.AtmosIcons?.weather(code, isDay) || '';
+  const icon = (code, isDay = true, hail = false) => window.AtmosIcons?.weather(code, isDay, hail) || '';
   const uiIcon = (name) => window.AtmosIcons?.ui(name) || '';
   const temperature = (value) => finite(value) ? `${Math.round(state.unit === 'F' ? value * 9 / 5 + 32 : value)}\u00b0` : DASH;
   const number = (value, suffix = '', digits = 0) => finite(value) ? `${value.toLocaleString('en', { maximumFractionDigits: digits })}${suffix}` : DASH;
@@ -352,7 +352,7 @@
     text('lastUpdated', `Updated ${updatedTime}${abbreviation ? ` ${abbreviation}` : ''}`);
     text('rainValue', number(hourlyValue('precipitation_probability'), '%'));
     text('pressureValue', number(conditions.pressure, ' hPa'));
-    if (finite(conditions.weatherCode)) byId('heroArt').innerHTML = icon(conditions.weatherCode, conditions.isDay);
+    if (finite(conditions.weatherCode)) byId('heroArt').innerHTML = icon(conditions.weatherCode, conditions.isDay, conditions.hail);
     document.body.dataset.weather = weatherGroup(conditions.weatherCode);
     document.body.dataset.daylight = conditions.isDay ? 'day' : 'night';
     byId('heroArt').dataset.weather = weatherGroup(conditions.weatherCode);
@@ -368,7 +368,7 @@
       const art = element('span', 'hour-icon');
       const code = hourCode(index);
       const info = state.weather.wapk?.hours[index];
-      if (finite(code)) art.innerHTML = icon(code, Boolean(hours.is_day?.[index]));
+      if (finite(code)) art.innerHTML = icon(code, Boolean(hours.is_day?.[index]), Boolean(info?.hail));
       art.setAttribute('aria-hidden', 'true');
       if (info?.hail) art.append(element('span', 'hail-dot', 'Hail'));
       row.append(element('span', 'hour-label', offset === 0 ? 'Now' : hourLabel(time)), art,
@@ -450,7 +450,7 @@
       row.setAttribute('aria-pressed', String(index === state.selectedDay)); row.setAttribute('aria-controls', 'dayDetails');
       const art = element('span', 'day-icon');
       const code = dayCode(index);
-      if (finite(code)) art.innerHTML = icon(code);
+      if (finite(code)) art.innerHTML = icon(code, true, Boolean(dayInfo(index)?.hail));
       art.setAttribute('aria-hidden', 'true');
       if (dayInfo(index)?.hail) art.append(element('span', 'hail-dot', 'Hail'));
       const range = element('span', 'day-range'); range.setAttribute('aria-hidden', 'true');

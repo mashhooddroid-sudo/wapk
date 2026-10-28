@@ -298,6 +298,7 @@ h1, h2, h3 { font-family: Manrope, sans-serif; }
 .hero-art .icon-rain { animation: rainFall 1.5s ease-in-out infinite; }
 .hero-art .icon-snow { animation: cloudDrift 4s ease-in-out infinite; }
 .hero-art .icon-bolt { animation: lightning 6s infinite; }
+.hero-art .icon-hail { animation: rainFall 1.2s ease-in-out infinite; }
 @keyframes heroFloat { 50% { transform: translateY(-6px); } }
 @keyframes ambientFloat { to { transform: translate3d(-70px,65px,0) scale(1.15); } }
 @keyframes ribbonDrift { to { transform: translate3d(30px,-25px,0) scale(1.04); } }
