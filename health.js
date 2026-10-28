@@ -1,23 +1,27 @@
 (() => {
   'use strict';
 
-  // Health section: air quality, PMD pollen, dengue (mosquito) conditions and weather health threats for the
-  // chosen place. Sources:
+  // Health section: alerts, air quality, PMD pollen, seasonal disease risks and heat/cold/UV for the chosen place.
+  // Sources:
   //   • Air quality — Open-Meteo Air Quality (CAMS): US AQI and pollutants, 4-day forecast.
-  //   • Pollen — PMD's daily Islamabad pollen count, read by the PK worker (/api/pollen).
-  //   • Weather — Open-Meteo forecast with the past 14 days, for dengue conditions, heat, cold and UV.
+  //   • Pollen — PMD daily counts for Islamabad (R&D) and Lahore (Flood Forecasting Division), read by the PK worker.
+  //   • Weather — Open-Meteo forecast with the past 14 days.
   //   • Thunderstorms and hail — the classification app.js already made (weather-logic.js).
-  // There is no open feed of dengue cases in Pakistan, so dengue risk here is a weather-based estimate of how
-  // favourable conditions are for Aedes mosquitoes, not a count of cases.
+  // There is no open feed of disease cases in Pakistan, so disease risks are weather-based estimates of how
+  // favourable conditions are (mosquitoes, contaminated water, cold, heat, humidity, polluted air) — not case counts.
   const WORKER = 'https://lightning-weatherx-pk-api.mashhood-droid.workers.dev';
   const REFRESH_MS = 30 * 60 * 1000;
-  const POLLEN_NEAR_KM = 150; // Pollen alerts are raised only this close to PMD's Islamabad sampler.
+  const POLLEN_NEAR_KM = 150; // Pollen counts feed alerts and the asthma risk only this close to a PMD sampler.
+  const POLLEN_FRESH_DAYS = 3; // ...and only while the latest count is this recent.
   const ALERT_DAYS = 3;
+  const LEVELS = ['Low', 'Moderate', 'High', 'Very high'];
+  const SHORT_LEVEL = { Low: 'Low', Moderate: 'Mod', High: 'High', 'Very high': 'V.high' };
 
   const byId = (id) => document.getElementById(id);
   const finite = (value) => typeof value === 'number' && Number.isFinite(value);
   const ui = (name) => window.AtmosIcons?.ui(name) || '';
-  const state = { key: null, loadedAt: 0, data: null, request: 0, visible: false };
+  const levelClass = (level) => (level || 'low').toLowerCase().replace(' ', '-');
+  const state = { key: null, loadedAt: 0, data: null, request: 0, visible: false, pollenStation: null };
 
   function element(tag, className, content) {
     const node = document.createElement(tag);
@@ -41,6 +45,7 @@
     if (index === 0) return 'Today';
     return new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00Z`));
   }
+  function daysBetween(fromDate, toDate) { return Math.round((Date.parse(`${toDate}T00:00Z`) - Date.parse(`${fromDate}T00:00Z`)) / 86400000); }
   function distanceKm(a, b) {
     const rad = Math.PI / 180;
     const dLat = (b.latitude - a.latitude) * rad;
@@ -62,6 +67,7 @@
     const key = placeKey(city);
     if (!force && key === state.key && Date.now() - state.loadedAt < REFRESH_MS && state.data) { render(); return; }
     const request = ++state.request;
+    if (key !== state.key) state.pollenStation = null;
     state.key = key;
     byId('healthPlace').textContent = city.name || 'Your location';
     setBusy(true);
@@ -91,7 +97,7 @@
 
   function setBusy(busy) { byId('healthView').setAttribute('aria-busy', String(busy)); }
 
-  // ── Risk rules ────────────────────────────────────────────────────────────
+  // ── Daily inputs ──────────────────────────────────────────────────────────
 
   const AQI_LEVELS = [
     [50, 'Good', 'good', 'Air quality is fine for everyone.'],
@@ -103,49 +109,12 @@
   ];
   const aqiLevel = (aqi) => AQI_LEVELS.find(([limit]) => aqi <= limit);
 
-  // Dengue (Aedes mosquito) conditions for one day. Points, 0–8:
-  //   temperature (daily mean): under 16 °C 0 · 16–20 1 · 20–24 2 · 24–32 3 (best for Aedes) · 32–35 2 · over 35 1
-  //   humidity (daily mean):    under 50 % 0 · 50–70 1 · 70+ 2
-  //   rain in the previous 14 days (breeding water): under 5 mm 0 · 5–25 1 · 25+ 2
-  //   season: August–November, Pakistan's dengue season, +1
-  // 0–2 Low · 3–4 Moderate · 5–6 High · 7–8 Very high. Below 16 °C mosquitoes barely bite, so it stays Low.
-  function dengueRisk(meanT, humidity, rain14, month) {
-    if (!finite(meanT)) return null;
-    const temp = meanT < 16 ? 0 : meanT < 20 ? 1 : meanT < 24 ? 2 : meanT <= 32 ? 3 : meanT <= 35 ? 2 : 1;
-    const wet = !finite(humidity) ? 0 : humidity >= 70 ? 2 : humidity >= 50 ? 1 : 0;
-    const water = !finite(rain14) ? 0 : rain14 >= 25 ? 2 : rain14 >= 5 ? 1 : 0;
-    const season = month >= 8 && month <= 11 ? 1 : 0;
-    const score = meanT < 16 ? Math.min(2, temp + wet + water + season) : temp + wet + water + season;
-    const level = score <= 2 ? 'Low' : score <= 4 ? 'Moderate' : score <= 6 ? 'High' : 'Very high';
-    return { score, level, temp, wet, water, season };
-  }
-
-  function dailySeries() {
-    const daily = state.data?.weather?.daily;
-    if (!daily?.time) return [];
-    // past_days puts 14 days before today; today is the first date not before the place's local date.
-    const today = state.data.weather.current_weather?.time?.slice(0, 10) || localToday(state.data.weather.utc_offset_seconds);
-    const start = Math.max(0, daily.time.indexOf(today));
-    return daily.time.slice(start).map((date, offset) => {
-      const index = start + offset;
-      const rain14 = daily.precipitation_sum.slice(Math.max(0, index - 14), index).reduce((sum, value) => sum + (finite(value) ? value : 0), 0);
-      return {
-        date,
-        max: daily.temperature_2m_max?.[index], min: daily.temperature_2m_min?.[index], mean: daily.temperature_2m_mean?.[index],
-        feelsMax: daily.apparent_temperature_max?.[index], feelsMin: daily.apparent_temperature_min?.[index],
-        humidity: daily.relative_humidity_2m_mean?.[index], rain: daily.precipitation_sum?.[index], rain14,
-        uv: daily.uv_index_max?.[index],
-        dengue: dengueRisk(daily.temperature_2m_mean?.[index], daily.relative_humidity_2m_mean?.[index], rain14, Number(date.slice(5, 7)))
-      };
-    });
-  }
-
   function localToday(offsetSeconds) {
     return new Date(Date.now() + (offsetSeconds || 0) * 1000).toISOString().slice(0, 10);
   }
 
-  // Highest hourly value per local date of an hourly series.
-  function dailyMax(hourly, field, reduce = Math.max) {
+  // Highest (or lowest) hourly value per local date of an hourly series.
+  function dailyExtreme(hourly, field, reduce = Math.max) {
     const out = new Map();
     (hourly?.time || []).forEach((time, index) => {
       const value = hourly[field]?.[index];
@@ -156,75 +125,297 @@
     return out;
   }
 
-  const SHORT_LEVEL = { Low: 'Low', Moderate: 'Mod', High: 'High', 'Very high': 'V.high' };
+  // Today and the next six days, each with everything the risk rules need.
+  function dailySeries() {
+    const weather = state.data?.weather;
+    const daily = weather?.daily;
+    if (!daily?.time) return [];
+    const today = localToday(weather.utc_offset_seconds);
+    const start = Math.max(0, daily.time.indexOf(today));
+    const rainSum = (from, to) => daily.precipitation_sum.slice(Math.max(0, from), to).reduce((sum, value) => sum + (finite(value) ? value : 0), 0);
+    const aqiByDay = dailyExtreme(state.data.air?.hourly, 'us_aqi');
+    const dustByDay = dailyExtreme(state.data.air?.hourly, 'dust');
+    const visibilityByDay = dailyExtreme(weather.hourly, 'visibility', Math.min);
+    const pollen = nearPollen();
+    return daily.time.slice(start).map((date, offset) => {
+      const index = start + offset;
+      return {
+        date, offset, month: Number(date.slice(5, 7)),
+        max: daily.temperature_2m_max?.[index], min: daily.temperature_2m_min?.[index], mean: daily.temperature_2m_mean?.[index],
+        feelsMax: daily.apparent_temperature_max?.[index], feelsMin: daily.apparent_temperature_min?.[index],
+        humidity: daily.relative_humidity_2m_mean?.[index], rain: daily.precipitation_sum?.[index],
+        rain3: rainSum(index - 2, index + 1), rain14: rainSum(index - 14, index),
+        uv: daily.uv_index_max?.[index],
+        aqi: aqiByDay.get(date) ?? null, dust: dustByDay.get(date) ?? null, visibility: visibilityByDay.get(date) ?? null,
+        // A pollen count describes the day it was sampled; it is carried to today and tomorrow only.
+        pollen: offset <= 1 ? pollen : null
+      };
+    });
+  }
+
+  // ── Pollen stations ───────────────────────────────────────────────────────
+
   const POLLEN_ORDER = { absent: 0, low: 1, moderate: 2, high: 3, 'very high': 4 };
   const pollenRank = (category) => POLLEN_ORDER[String(category || '').toLowerCase()] ?? 0;
   const pollenClass = (category) => ['absent', 'low', 'moderate', 'high', 'very-high'][pollenRank(category)];
+  const POLLEN_WORDS = ['absent', 'low', 'moderate', 'high', 'very high'];
 
-  // Every alert for today and the next two days, most serious first.
-  function buildAlerts(days) {
+  // Stations with a report, nearest first. Older payloads have a single Islamabad report at the top level.
+  function pollenStations() {
+    const payload = state.data?.pollen;
+    if (!payload) return [];
+    const stations = payload.stations || (payload.latest ? [{ id: 'islamabad', name: 'Islamabad', ...payload.station, source: payload.source, sourceUrl: payload.sourceUrl, latest: payload.latest, history: payload.history }] : []);
+    return stations.filter((station) => station.latest)
+      .map((station) => ({ ...station, distance: distanceKm(state.data.city, station) }))
+      .sort((a, b) => a.distance - b.distance);
+  }
+
+  // The nearest station's latest count if it is close and recent enough to describe local air.
+  function nearPollen() {
+    const station = pollenStations()[0];
+    if (!station || station.distance > POLLEN_NEAR_KM) return null;
+    const age = daysBetween(station.latest.date, localToday(state.data.weather?.utc_offset_seconds));
+    if (age > POLLEN_FRESH_DAYS) return null;
+    const top = station.latest.types.reduce((best, item) => Math.max(best, pollenRank(item.category)), 0);
+    const names = station.latest.types.filter((item) => pollenRank(item.category) === top && top > 0).map((item) => item.type);
+    return { station, top, names };
+  }
+
+  // ── Seasonal disease risks ────────────────────────────────────────────────
+  //
+  // Each disease scores a day from the weather and returns a level plus the factors behind it, so the card can show
+  // exactly why. Thresholds are rules of thumb from public-health guidance for South Asia; they estimate how
+  // favourable conditions are, not how many people are ill.
+
+  const band = (points, cuts) => LEVELS[cuts.filter((cut) => points >= cut).length];
+  const factor = (name, value, points, max, note) => ({ name, value, points, max, note });
+  const tempText = (value) => (finite(value) ? `${degrees(value)} average` : '—');
+
+  const DISEASES = [
+    {
+      id: 'dengue', name: 'Dengue', icon: 'mosquito', alert: true,
+      about: 'Spread by Aedes mosquitoes that breed in clean standing water (tanks, coolers, pots, tyres) and bite at dawn and dusk.',
+      symptoms: 'Sudden high fever, severe headache, pain behind the eyes, body and joint aches, rash. Warning signs: bleeding gums, vomiting, belly pain.',
+      prevention: 'Empty or cover water containers, coolers and plant pots every week; use repellent and full sleeves at dawn and dusk; sleep under a net. Take only paracetamol for fever and see a doctor.',
+      // Points 0–8: temperature (ideal 24–32 °C) 0–3, humidity 0–2, rain in the previous 14 days 0–2, season Aug–Nov +1.
+      assess(day) {
+        if (!finite(day.mean)) return null;
+        const t = day.mean < 16 ? 0 : day.mean < 20 ? 1 : day.mean < 24 ? 2 : day.mean <= 32 ? 3 : day.mean <= 35 ? 2 : 1;
+        const h = !finite(day.humidity) ? 0 : day.humidity >= 70 ? 2 : day.humidity >= 50 ? 1 : 0;
+        const r = day.rain14 >= 25 ? 2 : day.rain14 >= 5 ? 1 : 0;
+        const s = day.month >= 8 && day.month <= 11 ? 1 : 0;
+        const points = t + h + r + s;
+        return {
+          level: day.mean < 16 ? 'Low' : band(points, [3, 5, 7]),
+          factors: [
+            factor('Temperature', tempText(day.mean), t, 3, t === 3 ? 'ideal for Aedes mosquitoes' : t === 0 ? 'too cold for mosquitoes' : 'mosquitoes less active'),
+            factor('Humidity', finite(day.humidity) ? `${Math.round(day.humidity)}%` : '—', h, 2, h === 2 ? 'humid' : h ? 'moderate' : 'dry'),
+            factor('Rain, last 14 days', `${Math.round(day.rain14)} mm`, r, 2, r === 2 ? 'plenty of breeding water' : r ? 'some standing water' : 'little rain (tanks and coolers still breed mosquitoes)'),
+            factor('Season', s ? 'Dengue season' : 'Off season', s, 1, 'August–November peak in Pakistan')
+          ]
+        };
+      }
+    },
+    {
+      id: 'malaria', name: 'Malaria', icon: 'mosquito', alert: true,
+      about: 'Spread by Anopheles mosquitoes that breed in rain pools, ponds, rice fields and irrigation water; they bite at night. Highest in Sindh, Balochistan and southern KP.',
+      symptoms: 'Fever with shivering and sweating that comes and goes, headache, vomiting, body aches. It can become severe within a day.',
+      prevention: 'Sleep under a treated bed net, use repellent in the evening, drain standing water near homes, and get a malaria test for any fever after heavy rain.',
+      // Points 0–8: temperature (ideal 25–30 °C) 0–3, humidity 0–2, rain in the previous 14 days 0–2, season Jul–Nov +1.
+      assess(day) {
+        if (!finite(day.mean)) return null;
+        const t = day.mean < 16 ? 0 : day.mean < 20 ? 1 : day.mean < 25 ? 2 : day.mean <= 30 ? 3 : day.mean <= 33 ? 2 : 1;
+        const h = !finite(day.humidity) ? 0 : day.humidity >= 60 ? 2 : day.humidity >= 50 ? 1 : 0;
+        const r = day.rain14 >= 40 ? 2 : day.rain14 >= 10 ? 1 : 0;
+        const s = day.month >= 7 && day.month <= 11 ? 1 : 0;
+        const points = t + h + r + s;
+        // Anopheles needs rain pools, so without recent rain the risk stays at Moderate at most.
+        const level = day.mean < 16 ? 'Low' : band(points, [3, 5, 7]);
+        return {
+          level: r === 0 && LEVELS.indexOf(level) > 1 ? 'Moderate' : level,
+          factors: [
+            factor('Temperature', tempText(day.mean), t, 3, t === 3 ? 'ideal for the malaria parasite' : t === 0 ? 'too cold' : 'slower parasite growth'),
+            factor('Humidity', finite(day.humidity) ? `${Math.round(day.humidity)}%` : '—', h, 2, h === 2 ? 'mosquitoes live longer' : h ? 'moderate' : 'dry'),
+            factor('Rain, last 14 days', `${Math.round(day.rain14)} mm`, r, 2, r === 2 ? 'rain pools for breeding' : r ? 'some pools' : 'little rain'),
+            factor('Season', s ? 'Malaria season' : 'Off season', s, 1, 'July–November peak after the monsoon')
+          ]
+        };
+      }
+    },
+    {
+      id: 'waterborne', name: 'Diarrhoea, cholera & typhoid', icon: 'droplet', alert: true,
+      about: 'Caused by germs in contaminated water and food. Heat makes germs multiply in food; heavy rain and flooding mix sewage into drinking water.',
+      symptoms: 'Watery diarrhoea, vomiting, stomach cramps, fever (typhoid: fever rising over days, headache, weakness). Dehydration is the main danger, especially for children.',
+      prevention: 'Drink boiled or treated water, eat freshly cooked food, wash hands with soap, avoid cut fruit and street drinks. Use ORS early for diarrhoea; get typhoid vaccination.',
+      // Points 0–7: heat (daily max) 0–3, rain in the last 3 days 0–3, season May–Sep +1.
+      assess(day) {
+        if (!finite(day.max)) return null;
+        const t = day.max < 25 ? 0 : day.max < 32 ? 1 : day.max < 38 ? 2 : 3;
+        const r = day.rain3 >= 50 ? 3 : day.rain3 >= 20 ? 2 : day.rain3 >= 5 ? 1 : 0;
+        const s = day.month >= 5 && day.month <= 9 ? 1 : 0;
+        return {
+          level: band(t + r + s, [2, 4, 6]),
+          factors: [
+            factor('Heat', `${degrees(day.max)} high`, t, 3, t >= 2 ? 'germs multiply fast in food and water' : t ? 'warm' : 'cool'),
+            factor('Rain, last 3 days', `${Math.round(day.rain3)} mm`, r, 3, r === 3 ? 'flooding risk, sewage in water' : r === 2 ? 'heavy rain' : r ? 'some rain' : 'dry'),
+            factor('Season', s ? 'Summer & monsoon' : 'Off season', s, 1, 'May–September peak')
+          ]
+        };
+      }
+    },
+    {
+      id: 'flu', name: 'Flu, colds & pneumonia', icon: 'thermometer', alert: true,
+      about: 'Respiratory viruses spread most in cold weather when people crowd indoors; sharp day–night temperature swings and dry air weaken the nose and throat.',
+      symptoms: 'Fever, cough, sore throat, runny nose, body aches. Pneumonia: fast or difficult breathing, chest pain — urgent for babies and the elderly.',
+      prevention: 'Get the yearly flu vaccine, dress in layers for cold mornings, wash hands, cover coughs, keep rooms aired. Seek care quickly for breathing trouble.',
+      // Points 0–6: cold (daily mean) 0–3, day–night swing ≥ 15 °C +1, dry air < 40 % +1, season Nov–Feb +1.
+      assess(day) {
+        if (!finite(day.mean)) return null;
+        const t = day.mean >= 20 ? 0 : day.mean >= 15 ? 1 : day.mean >= 10 ? 2 : 3;
+        const swing = finite(day.max) && finite(day.min) ? day.max - day.min : null;
+        const w = finite(swing) && swing >= 15 ? 1 : 0;
+        const d = finite(day.humidity) && day.humidity < 40 ? 1 : 0;
+        const s = day.month >= 11 || day.month <= 2 ? 1 : 0;
+        return {
+          level: band(t + w + d + s, [2, 4, 6]),
+          factors: [
+            factor('Cold', tempText(day.mean), t, 3, t >= 2 ? 'cold — people crowd indoors' : t ? 'cool' : 'warm'),
+            factor('Day–night swing', finite(swing) ? `${Math.round(swing)}°` : '—', w, 1, w ? 'large swing stresses the body' : 'small swing'),
+            factor('Dry air', finite(day.humidity) ? `${Math.round(day.humidity)}%` : '—', d, 1, d ? 'dry air helps viruses spread' : 'not dry'),
+            factor('Season', s ? 'Flu season' : 'Off season', s, 1, 'November–February peak')
+          ]
+        };
+      }
+    },
+    {
+      id: 'asthma', name: 'Asthma & breathing problems', icon: 'leaf', alert: false,
+      about: 'Smog, dust, pollen and cold dry air irritate the airways and trigger asthma, bronchitis and COPD attacks.',
+      symptoms: 'Wheezing, tight chest, cough, shortness of breath, itchy or burning eyes and throat.',
+      prevention: 'Keep reliever inhalers with you, avoid outdoor exercise on bad-air days, wear an N95 mask in smog or dust, keep windows closed, and follow your asthma plan.',
+      // Points 0–8: AQI 0–3, dust 0–2, pollen (nearby PMD count) 0–2, cold dry air +1.
+      assess(day) {
+        const a = !finite(day.aqi) ? 0 : day.aqi > 200 ? 3 : day.aqi > 150 ? 2 : day.aqi > 100 ? 1 : 0;
+        const u = !finite(day.dust) ? 0 : day.dust >= 500 ? 2 : day.dust >= 200 ? 1 : 0;
+        const p = !day.pollen ? 0 : day.pollen.top >= 4 ? 2 : day.pollen.top === 3 ? 1 : 0;
+        const c = finite(day.min) && day.min <= 5 && finite(day.humidity) && day.humidity < 40 ? 1 : 0;
+        if (!finite(day.aqi) && !finite(day.min)) return null;
+        return {
+          level: band(a + u + p + c, [2, 3, 5]),
+          factors: [
+            factor('Air quality', finite(day.aqi) ? `AQI ${Math.round(day.aqi)}` : 'no forecast', a, 3, a >= 2 ? 'unhealthy air' : a ? 'poor for sensitive people' : 'acceptable'),
+            factor('Dust', finite(day.dust) ? `${Math.round(day.dust)} µg/m³` : 'no forecast', u, 2, u === 2 ? 'dust storm' : u ? 'dusty' : 'low'),
+            factor('Pollen', day.pollen ? `${POLLEN_WORDS[day.pollen.top]} (${day.pollen.station.name})` : 'no nearby count', p, 2, day.pollen?.names.length ? day.pollen.names.join(', ') : 'PMD measures Islamabad and Lahore'),
+            factor('Cold, dry air', finite(day.min) ? `${degrees(day.min)} low` : '—', c, 1, c ? 'cold dry air tightens airways' : 'no')
+          ]
+        };
+      }
+    },
+    {
+      id: 'heat', name: 'Heatstroke & dehydration', icon: 'sun', alert: false,
+      about: 'When heat and humidity stop the body cooling itself. Most at risk: outdoor workers, the elderly, young children and people without cooling.',
+      symptoms: 'Heavy sweating, dizziness, cramps, nausea (heat exhaustion). Heatstroke: hot dry skin, confusion, fainting — a medical emergency, call 1122.',
+      prevention: 'Drink water often (before you feel thirsty), avoid the sun 11 AM–4 PM, wear light loose clothes, rest in shade, never leave anyone in a parked car.',
+      // Feels-like maximum, NOAA heat-index bands: 35 caution, 41 danger, 54 extreme danger.
+      assess(day) {
+        if (!finite(day.feelsMax)) return null;
+        const f = day.feelsMax;
+        const points = f >= 54 ? 3 : f >= 41 ? 2 : f >= 35 ? 1 : 0;
+        return {
+          level: LEVELS[points],
+          factors: [factor('Feels like', `${degrees(f)} high`, points, 3, points === 3 ? 'extreme danger' : points === 2 ? 'danger — heatstroke possible' : points ? 'caution' : 'comfortable')]
+        };
+      }
+    },
+    {
+      id: 'eyeskin', name: 'Pink eye & skin infections', icon: 'eye', alert: true,
+      about: 'Hot, humid monsoon weather spreads conjunctivitis (pink eye) and fungal and bacterial skin infections; flood water adds more germs.',
+      symptoms: 'Red, itchy, watery or sticky eyes; itchy rashes, ringworm, boils, prickly heat.',
+      prevention: 'Wash hands often, do not touch or rub eyes, do not share towels or eye drops, keep skin dry, wear loose cotton clothes, avoid wading in flood water.',
+      // Hot and humid combined, raised one level after heavy rain.
+      assess(day) {
+        if (!finite(day.mean) || !finite(day.humidity)) return null;
+        let points = day.mean >= 30 && day.humidity >= 80 ? 3 : day.mean >= 28 && day.humidity >= 70 ? 2 : day.mean >= 25 && day.humidity >= 60 ? 1 : 0;
+        const wet = day.rain3 >= 20 && points >= 1 && points < 3 ? 1 : 0;
+        points += wet;
+        return {
+          level: LEVELS[points],
+          factors: [
+            factor('Heat', tempText(day.mean), day.mean >= 30 ? 3 : day.mean >= 28 ? 2 : day.mean >= 25 ? 1 : 0, 3, day.mean >= 28 ? 'hot' : day.mean >= 25 ? 'warm' : 'not hot'),
+            factor('Humidity', `${Math.round(day.humidity)}%`, day.humidity >= 70 ? 2 : day.humidity >= 60 ? 1 : 0, 2, day.humidity >= 70 ? 'very humid' : day.humidity >= 60 ? 'humid' : 'not humid'),
+            factor('Rain, last 3 days', `${Math.round(day.rain3)} mm`, wet, 1, wet ? 'wet conditions spread germs' : 'no heavy rain')
+          ]
+        };
+      }
+    },
+    {
+      id: 'co', name: 'Carbon monoxide (gas heaters)', icon: 'snowflake', alert: true,
+      about: 'Every winter in Pakistan people die from gas heaters and angeethis (charcoal stoves) burning in closed rooms. Carbon monoxide has no smell.',
+      symptoms: 'Headache, dizziness, sleepiness, nausea, confusion — often several people in the same room at once.',
+      prevention: 'Never sleep with a gas heater or angeethi burning; keep a window slightly open; switch heaters off before bed; fit a CO alarm if you can.',
+      // Night low: ≤ 10 °C heaters start, ≤ 5 common, ≤ 0 widespread, ≤ −5 all night.
+      assess(day) {
+        if (!finite(day.min)) return null;
+        const points = day.min <= -5 ? 3 : day.min <= 0 ? 2 : day.min <= 5 ? 1 : 0;
+        return {
+          level: LEVELS[points],
+          factors: [factor('Night low', `${degrees(day.min)}`, points, 3, points >= 2 ? 'heaters used all night' : points ? 'heaters in use' : day.min <= 10 ? 'some heater use' : 'heaters not needed')]
+        };
+      }
+    }
+  ];
+
+  function assessAll(days) {
+    return DISEASES.map((disease) => ({ disease, days: days.slice(0, 7).map((day) => disease.assess(day)) }));
+  }
+
+  // ── Alerts ────────────────────────────────────────────────────────────────
+
+  // Every alert for today and the next two days, most serious first; repeats across days become one card.
+  function buildAlerts(days, risks) {
     const alerts = [];
     const add = (severity, icon, title, when, detail, advice) => alerts.push({ severity, icon, title, when, detail, advice });
     const rank = { severe: 3, high: 2, moderate: 1 };
-    const aqiByDay = dailyMax(state.data?.air?.hourly, 'us_aqi');
-    const dustByDay = dailyMax(state.data?.air?.hourly, 'dust');
-    const visibilityByDay = dailyMax(state.data?.weather?.hourly, 'visibility', Math.min);
     const storms = window.Atmos?.forecastDays || [];
 
     days.slice(0, ALERT_DAYS).forEach((day, index) => {
       const when = dayName(day.date, index);
-      // Heat: feels-like maximum, NOAA heat index bands.
       if (finite(day.feelsMax)) {
         if (day.feelsMax >= 54) add('severe', 'thermometer', 'Extreme heat danger', when, `Feels like ${degrees(day.feelsMax)}. Heatstroke is likely with exposure.`, 'Stay indoors in the hottest hours, drink water often, check on elderly people and children.');
-        else if (day.feelsMax >= 41) add('high', 'thermometer', 'Heatstroke danger', when, `Feels like ${degrees(day.feelsMax)}. Heat cramps and heat exhaustion are likely; heatstroke possible.`, 'Avoid the sun 11 AM–4 PM, drink plenty of water, wear light clothing.');
+        else if (day.feelsMax >= 41) add('high', 'thermometer', 'Heatstroke danger', when, `Feels like ${degrees(day.feelsMax)}. Heat exhaustion likely; heatstroke possible.`, 'Avoid the sun 11 AM–4 PM, drink plenty of water, wear light clothing.');
         else if (day.feelsMax >= 35) add('moderate', 'thermometer', 'Heat caution', when, `Feels like ${degrees(day.feelsMax)}. Heat exhaustion is possible with long exposure.`, 'Take breaks in the shade and keep drinking water.');
       }
-      // Cold.
-      if (finite(day.feelsMin) && day.feelsMin <= -10) add('high', 'snowflake', 'Severe cold', when, `Feels like ${degrees(day.feelsMin)} at night. Risk of frostbite and hypothermia.`, 'Dress in layers, cover hands and face, keep heaters ventilated (carbon monoxide).');
-      else if (finite(day.min) && day.min <= 0) add('moderate', 'snowflake', 'Freezing night', when, `Low of ${degrees(day.min)}. Frost and icy roads possible.`, 'Keep warm at night; take care on roads in the morning. Ventilate gas heaters.');
-      // UV.
+      if (finite(day.feelsMin) && day.feelsMin <= -10) add('high', 'snowflake', 'Severe cold', when, `Feels like ${degrees(day.feelsMin)} at night. Risk of frostbite and hypothermia.`, 'Dress in layers, cover hands and face.');
+      else if (finite(day.min) && day.min <= 0) add('moderate', 'snowflake', 'Freezing night', when, `Low of ${degrees(day.min)}. Frost and icy roads possible.`, 'Keep warm at night and take care on roads in the morning.');
       if (finite(day.uv) && day.uv >= 11) add('high', 'sun', 'Extreme UV', when, `UV index up to ${Math.round(day.uv)}. Unprotected skin burns in minutes.`, 'Avoid midday sun, wear a hat and sunglasses, use SPF 30+ sunscreen.');
       else if (finite(day.uv) && day.uv >= 8) add('moderate', 'sun', 'Very high UV', when, `UV index up to ${Math.round(day.uv)}.`, 'Seek shade at midday and protect skin and eyes.');
-      // Air quality (daily maximum of the hourly forecast).
-      const aqi = aqiByDay.get(day.date);
-      if (finite(aqi) && aqi > 100) {
-        const [, label] = aqiLevel(aqi);
-        const severity = aqi > 300 ? 'severe' : aqi > 150 ? 'high' : 'moderate';
-        add(severity, 'leaf', `Air quality: ${label}`, when, `US AQI up to ${Math.round(aqi)}.`, aqiLevel(aqi)[3]);
+      if (finite(day.aqi) && day.aqi > 100) {
+        const [, label, , advice] = aqiLevel(day.aqi);
+        add(day.aqi > 300 ? 'severe' : day.aqi > 150 ? 'high' : 'moderate', 'leaf', `Air quality: ${label}`, when, `US AQI up to ${Math.round(day.aqi)}.`, advice);
       }
-      // Dust.
-      const dust = dustByDay.get(day.date);
-      if (finite(dust) && dust >= 500) add('high', 'wind', 'Dust storm conditions', when, `Dust up to ${Math.round(dust)} µg/m³.`, 'Stay indoors, keep windows shut, wear a mask outdoors. People with asthma should keep inhalers at hand.');
-      else if (finite(dust) && dust >= 200) add('moderate', 'wind', 'Dusty air', when, `Dust up to ${Math.round(dust)} µg/m³.`, 'People with asthma or allergies should limit time outdoors.');
-      // Fog and smog.
-      const visibility = visibilityByDay.get(day.date);
-      if (finite(visibility) && visibility < 1000) {
-        const smog = finite(aqi) && aqi > 150;
-        add(smog ? 'high' : 'moderate', 'eye', smog ? 'Smog' : 'Fog', when, `Visibility down to ${visibility < 1000 ? `${Math.round(visibility / 10) * 10} m` : ''}${smog ? ` with US AQI ${Math.round(aqi)}` : ''}.`, smog ? 'Avoid outdoor exercise, wear a mask, drive slowly with low beams.' : 'Drive slowly with low beams and keep distance.');
+      if (finite(day.dust) && day.dust >= 500) add('high', 'wind', 'Dust storm conditions', when, `Dust up to ${Math.round(day.dust)} µg/m³.`, 'Stay indoors, keep windows shut, wear a mask outdoors. People with asthma should keep inhalers at hand.');
+      else if (finite(day.dust) && day.dust >= 200) add('moderate', 'wind', 'Dusty air', when, `Dust up to ${Math.round(day.dust)} µg/m³.`, 'People with asthma or allergies should limit time outdoors.');
+      if (finite(day.visibility) && day.visibility < 1000) {
+        const smog = finite(day.aqi) && day.aqi > 150;
+        add(smog ? 'high' : 'moderate', 'eye', smog ? 'Smog' : 'Fog', when, `Visibility down to about ${Math.round(day.visibility / 10) * 10} m${smog ? ` with US AQI ${Math.round(day.aqi)}` : ''}.`, smog ? 'Avoid outdoor exercise, wear a mask, drive slowly with low beams.' : 'Drive slowly with low beams and keep your distance.');
       }
-      // Thunderstorms and hail (app.js classification).
       const storm = storms.find((item) => item.date === day.date);
       if (storm && storm.code >= 95) {
-        const severity = storm.hail || storm.intensity === 'severe' ? 'high' : 'moderate';
-        add(severity, 'bolt', storm.hail ? 'Thunderstorms with possible hail' : 'Thunderstorms', when, `${storm.condition}${storm.intensity ? ` · ${storm.intensity} storm energy` : ''}.`, 'Stay indoors during storms, avoid open ground, trees and poles. Lightning can strike 15 km from a storm.');
+        add(storm.hail || storm.intensity === 'severe' ? 'high' : 'moderate', 'bolt', storm.hail ? 'Thunderstorms with possible hail' : 'Thunderstorms', when, `${storm.condition}${storm.intensity ? ` · ${storm.intensity} storm energy` : ''}.`, 'Stay indoors during storms, avoid open ground, trees and poles. Lightning can strike 15 km from a storm.');
       }
-      // Dengue conditions.
-      if (day.dengue && (day.dengue.level === 'High' || day.dengue.level === 'Very high')) {
-        add(day.dengue.level === 'Very high' ? 'high' : 'moderate', 'mosquito', `Dengue mosquito risk: ${day.dengue.level}`, when, 'Warm, humid weather after rain favours Aedes mosquitoes, which bite mostly at dawn and dusk.', 'Remove standing water, use repellent and full sleeves, sleep under a net. See a doctor for fever with body aches.');
-      }
+      // Disease risks at High or Very high (heat and breathing are already covered by the alerts above).
+      risks.forEach(({ disease, days: levels }) => {
+        const result = levels[index];
+        if (!disease.alert || !result || (result.level !== 'High' && result.level !== 'Very high')) return;
+        add(result.level === 'Very high' ? 'high' : 'moderate', disease.icon, `${disease.name}: ${result.level.toLowerCase()} risk`, when, disease.about, disease.prevention);
+      });
     });
 
-    // Pollen (latest PMD count), only near Islamabad.
-    const pollen = state.data?.pollen;
-    if (pollen?.latest && distanceKm(state.data.city, pollen.station) <= POLLEN_NEAR_KM) {
-      const top = Math.max(...pollen.latest.types.map((item) => pollenRank(item.category)));
-      if (top >= 3) {
-        const names = pollen.latest.types.filter((item) => pollenRank(item.category) === top).map((item) => item.type).join(', ');
-        add(top === 4 ? 'high' : 'moderate', 'flower', `Pollen ${top === 4 ? 'very high' : 'high'}`, `PMD, ${pollen.latest.label}`, `${names} pollen ${top === 4 ? 'very high' : 'high'} in Islamabad.`, 'Allergy sufferers: keep windows closed, wear a mask and sunglasses outdoors, shower after coming in.');
-      }
+    const pollen = nearPollen();
+    if (pollen && pollen.top >= 3) {
+      const word = pollen.top === 4 ? 'very high' : 'high';
+      add(pollen.top === 4 ? 'high' : 'moderate', 'flower', `Pollen ${word}`, `PMD ${pollen.station.name}, ${pollen.station.latest.label}`, `${pollen.names.join(', ')} pollen ${word} in ${pollen.station.name}.`, 'Allergy sufferers: keep windows closed, wear a mask and sunglasses outdoors, shower after coming in.');
     }
-    // The same alert on several days becomes one card ("Today, Tomorrow, Friday") at its worst severity,
-    // keeping the first day's details.
+
     const merged = [];
     alerts.forEach((alert) => {
       const same = merged.find((item) => item.title === alert.title);
@@ -240,10 +431,11 @@
   function render() {
     if (!state.data) return;
     const days = dailySeries();
-    renderAlerts(buildAlerts(days));
+    const risks = assessAll(days);
+    renderAlerts(buildAlerts(days, risks));
     renderAir();
     renderPollen();
-    renderDengue(days);
+    renderDiseases(days, risks);
     renderWeatherRisks(days);
     const updated = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(state.loadedAt));
     byId('healthUpdated').textContent = `Updated ${updated}`;
@@ -292,7 +484,7 @@
       pollutants.append(tile);
     });
     const outlook = element('div', 'aqi-outlook');
-    [...dailyMax(air.hourly, 'us_aqi')].slice(0, 4).forEach(([date, value], index) => {
+    [...dailyExtreme(air.hourly, 'us_aqi')].slice(0, 4).forEach(([date, value], index) => {
       const [, dayLabel, dayKey] = aqiLevel(value);
       const col = element('div', 'aqi-day');
       const bar = element('span', `aqi-bar is-${dayKey}`);
@@ -307,30 +499,60 @@
   function renderPollen() {
     const body = byId('healthPollen');
     body.replaceChildren();
-    const pollen = state.data.pollen;
-    if (!pollen?.latest) { body.append(element('p', 'empty-state', 'PMD pollen data is temporarily unavailable.')); return; }
-    const latest = pollen.latest;
-    const distance = distanceKm(state.data.city, pollen.station);
+    const stations = pollenStations();
+    if (!stations.length) { body.append(element('p', 'empty-state', 'PMD pollen data is temporarily unavailable.')); return; }
+    const station = stations.find((item) => item.id === state.pollenStation) || stations[0];
+    // Station switch (nearest first).
+    const tabs = element('div', 'pollen-tabs');
+    tabs.setAttribute('role', 'group');
+    tabs.setAttribute('aria-label', 'Pollen station');
+    stations.forEach((item) => {
+      const button = element('button', 'pollen-tab', item.name);
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(item.id === station.id));
+      button.addEventListener('click', () => { state.pollenStation = item.id; renderPollen(); });
+      tabs.append(button);
+    });
+    body.append(tabs);
+
+    const latest = station.latest;
+    const today = localToday(state.data.weather?.utc_offset_seconds);
+    const age = daysBetween(latest.date, today);
     const top = latest.types.reduce((best, item) => (pollenRank(item.category) > pollenRank(best) ? item.category : best), 'Absent');
     const head = element('div', 'pollen-head');
-    head.append(element('span', `pollen-chip is-${pollenClass(top)}`, `Overall ${top.toLowerCase()}`), element('span', 'health-when', `PMD count for ${latest.label}`));
+    head.append(element('span', `pollen-chip is-${pollenClass(top)}`, `Overall ${top.toLowerCase()}`), element('span', 'health-when', latest.label));
     body.append(head);
-    if (distance > POLLEN_NEAR_KM) body.append(element('p', 'health-note', `Measured in Islamabad, ${Math.round(distance)} km from ${state.data.city.name}. Your local levels may differ.`));
-    // Sampling sites that reported anything that day.
+    if (age > POLLEN_FRESH_DAYS) body.append(element('p', 'health-note is-warning', `PMD has not published a newer ${station.name} count for ${age} days. ${station.id === 'lahore' ? 'Lahore is counted during the pollen season (spring and autumn).' : 'It may be between pollen seasons.'}`));
+    if (station.distance > POLLEN_NEAR_KM) body.append(element('p', 'health-note', `Measured in ${station.name}, ${Math.round(station.distance)} km from ${state.data.city.name}. Your local levels may differ.`));
+
     const sites = latest.sites.filter((site) => latest.types.some((item) => finite(item.counts[site])));
+    const header = element('div', 'pollen-row pollen-row-head');
+    header.append(element('span', '', 'Pollen'), element('span', '', 'Level'), element('span', '', 'Count'), element('span', '', 'Trend'));
     const list = element('div', 'pollen-list');
     [...latest.types].sort((a, b) => pollenRank(b.category) - pollenRank(a.category) || maxCount(b) - maxCount(a)).forEach((item) => {
       const row = element('div', 'pollen-row');
-      const trend = pollenTrend(item.type);
+      const threshold = latest.thresholds?.[item.type];
+      if (threshold) row.title = `${item.type}: low from ${threshold.low}, moderate from ${threshold.moderate}, high from ${threshold.high} grains/m³`;
       row.append(element('span', 'pollen-name', item.type), element('span', `pollen-chip is-${pollenClass(item.category)}`, item.category || '—'),
-        element('span', 'pollen-count', sites.map((site) => (finite(item.counts[site]) ? item.counts[site] : '—')).join(' / ')), trend);
+        element('span', 'pollen-count', sites.map((site) => (finite(item.counts[site]) ? formatCount(item.counts[site]) : '—')).join(' / ')), pollenTrend(station, item.type));
       list.append(row);
     });
-    const header = element('div', 'pollen-row pollen-row-head');
-    header.append(element('span', '', 'Pollen'), element('span', '', 'Level'), element('span', '', 'Count'), element('span', '', 'Trend'));
     body.append(header, list);
-    body.append(element('p', 'health-note', `Grains per m³ of air over 24 hours at PMD's Islamabad sampler${sites.length === 1 ? ` in sector ${sites[0]}` : sites.length ? `s in sectors ${sites.join(' / ')}` : 's'}. Updated daily by PMD.`));
+    if (latest.notes) body.append(element('p', 'health-note', `PMD note: ${latest.notes}`));
+    const where = station.id === 'islamabad'
+      ? `PMD's Islamabad sampler${sites.length === 1 ? ` in sector ${sites[0]}` : sites.length ? `s in sectors ${sites.join(' / ')}` : 's'}`
+      : `PMD Flood Forecasting Division's ${station.name} sampler`;
+    const source = element('p', 'health-note');
+    source.append(`Grains per m³ of air over 24 hours at ${where}. Levels are PMD's own. Source: `);
+    const link = element('a', '', station.source || 'PMD');
+    link.href = station.sourceUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    source.append(link, '.');
+    body.append(source);
   }
+
+  function formatCount(value) { return Number.isInteger(value) ? String(value) : value.toFixed(1); }
 
   function maxCount(item) {
     const values = Object.values(item.counts || {}).filter(finite);
@@ -338,8 +560,8 @@
   }
 
   // Tiny bar trend of the last 14 reports for one pollen type.
-  function pollenTrend(type) {
-    const history = (state.data.pollen.history || []).slice(-14);
+  function pollenTrend(station, type) {
+    const history = (station.history || []).slice(-14);
     const wrap = element('span', 'pollen-trend');
     if (history.length < 2) { wrap.textContent = 'building'; wrap.classList.add('is-empty'); return wrap; }
     const counts = history.map((report) => report.types.find((item) => item.type === type)?.count ?? 0);
@@ -353,40 +575,52 @@
     return wrap;
   }
 
-  function renderDengue(days) {
-    const body = byId('healthDengue');
+  function renderDiseases(days, risks) {
+    const body = byId('healthDiseases');
     body.replaceChildren();
-    const today = days[0]?.dengue;
-    if (!today) { body.append(element('p', 'empty-state', 'Weather data is temporarily unavailable.')); return; }
-    const head = element('div', 'dengue-head');
-    head.append(element('span', `risk-chip is-${today.level.toLowerCase().replace(' ', '-')}`, today.level), element('span', 'health-when', 'Today'));
-    const factors = element('ul', 'dengue-factors');
-    const d0 = days[0];
-    [
-      ['Temperature', `${degrees(d0.mean)} average`, today.temp, 3, today.temp >= 3 ? 'ideal for Aedes' : today.temp === 0 ? 'too cold for mosquitoes' : 'mosquitoes less active'],
-      ['Humidity', finite(d0.humidity) ? `${Math.round(d0.humidity)}%` : '—', today.wet, 2, today.wet === 2 ? 'humid' : today.wet === 1 ? 'moderate' : 'dry'],
-      ['Rain, last 14 days', `${Math.round(d0.rain14)} mm`, today.water, 2, today.water === 2 ? 'plenty of breeding water' : today.water === 1 ? 'some standing water' : 'little rain (water tanks and coolers still breed mosquitoes)'],
-      ['Season', today.season ? 'Dengue season' : 'Off season', today.season, 1, today.season ? 'August–November peak' : 'cases are fewer']
-    ].forEach(([name, value, points, max, note]) => {
-      const item = element('li');
-      const meter = element('span', 'factor-meter');
-      const fill = element('i');
-      fill.style.width = `${(points / max) * 100}%`;
-      meter.append(fill);
-      item.append(element('span', 'factor-name', name), element('strong', '', value), meter, element('small', '', note));
-      factors.append(item);
+    if (!days.length) { body.append(element('p', 'empty-state', 'Weather data is temporarily unavailable.')); return; }
+    const order = (entry) => LEVELS.indexOf(entry.days[0]?.level ?? 'Low');
+    const header = element('div', 'disease-row disease-row-head');
+    const dayLabels = element('span', 'disease-week');
+    days.slice(0, 7).forEach((day, index) => dayLabels.append(element('span', '', shortDay(day.date, index))));
+    header.append(element('span', '', 'Risk'), element('span', '', 'Level'), dayLabels);
+    body.append(header);
+    [...risks].sort((a, b) => order(b) - order(a)).forEach(({ disease, days: levels }) => {
+      const today = levels[0];
+      const item = element('details', 'disease');
+      const summary = element('summary', 'disease-row');
+      const name = element('span', 'disease-name');
+      const art = element('span', 'disease-icon');
+      art.innerHTML = ui(disease.icon);
+      name.append(art, element('span', '', disease.name));
+      const chip = element('span', `risk-chip is-${levelClass(today?.level)}`, today?.level || '—');
+      const week = element('span', 'disease-week');
+      levels.forEach((result, index) => {
+        const dot = element('span', `risk-dot is-${levelClass(result?.level)}`, result ? SHORT_LEVEL[result.level] : '—');
+        dot.title = `${shortDay(days[index].date, index)}: ${result ? `${result.level} risk` : 'unavailable'}`;
+        week.append(dot);
+      });
+      summary.append(name, chip, week);
+      const detail = element('div', 'disease-detail');
+      detail.append(element('p', '', disease.about));
+      if (today?.factors?.length) {
+        const factors = element('ul', 'dengue-factors');
+        today.factors.forEach((f) => {
+          const li = element('li');
+          const meter = element('span', 'factor-meter');
+          const fill = element('i');
+          fill.style.width = `${f.max ? (f.points / f.max) * 100 : 0}%`;
+          meter.append(fill);
+          li.append(element('span', 'factor-name', f.name), element('strong', '', f.value), meter, element('small', '', f.note));
+          factors.append(li);
+        });
+        detail.append(element('p', 'health-subhead', 'Why today'), factors);
+      }
+      detail.append(element('p', 'health-subhead', 'Symptoms'), element('p', '', disease.symptoms), element('p', 'health-subhead', 'Prevention'), element('p', '', disease.prevention));
+      item.append(summary, detail);
+      body.append(item);
     });
-    const week = element('div', 'risk-week');
-    days.slice(0, 7).forEach((day, index) => {
-      const cell = element('div', 'risk-day');
-      const level = day.dengue?.level;
-      const dot = element('span', `risk-dot is-${(level || 'low').toLowerCase().replace(' ', '-')}`, level ? SHORT_LEVEL[level] : '—');
-      dot.title = level ? `${level} risk` : 'Unavailable';
-      cell.append(element('span', '', shortDay(day.date, index)), dot);
-      week.append(cell);
-    });
-    body.append(head, factors, week, element('p', 'health-note', 'Estimated from the weather: how favourable conditions are for the mosquitoes that spread dengue. It is not a count of cases — follow your district health department for outbreak alerts.'),
-      element('p', 'health-advice', 'Empty or cover water containers, coolers and plant pots weekly; use repellent and full sleeves at dawn and dusk; see a doctor for high fever with body aches, and avoid painkillers other than paracetamol.'));
+    body.append(element('p', 'health-note', 'Estimated from the weather: how favourable conditions are for each illness — not a count of cases. Follow your district health department for outbreak alerts. Tap a risk for the reasons, symptoms and prevention.'));
   }
 
   function renderWeatherRisks(days) {

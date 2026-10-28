@@ -1,7 +1,7 @@
 # WAPK — Weather Alert PK: Complete Infrastructure Guide
 
 > Everything about how WAPK works: what runs where, where every piece of data comes from, how to deploy, how to fix things.
-> Written 25 October 2026, updated 28 October 2026 (Health section). If something changes, update this file.
+> Written 25 October 2026, updated 28 October 2026 (Health section, Lahore pollen, seasonal diseases). If something changes, update this file.
 
 ---
 
@@ -180,7 +180,7 @@ Make a new one the same way and paste it into the secret.
 | Satellite | EUMETSAT Meteosat (Indian Ocean service, satellite at 45.5°E) | Your worker stores images in D1 | New image every 15 min, usually 30–50 min old |
 | PMD radar | PMD Flood Forecasting Division (ffd.pmd.gov.pk) | Worker proxies the list; images load straight from PMD | 10 min (sri, cappi01), hourly (rain12) |
 | Lightning | Your lightning-alerts worker `/buffer` | Your PK worker stores in D1 | Every 5 min |
-| **Pollen** (Health) | **PMD R&D pollen monitoring**, https://weather.gov.pk/rnd/pollen-data (Islamabad) | Worker reads the page every 3 h, stores one report per PMD date, serves `/api/pollen` | PMD updates once a day |
+| **Pollen** (Health) | **PMD** — Islamabad: https://weather.gov.pk/rnd/pollen-data · Lahore: https://ffd.pmd.gov.pk/pollen | Worker reads both pages every 3 h, stores one report per station and PMD date, serves `/api/pollen` | Islamabad daily; Lahore daily during the pollen season |
 | Health air quality | Open-Meteo Air Quality (CAMS) — AQI + pollutants, 4 days | Direct | Hourly |
 | Health weather risks | Open-Meteo forecast with `past_days=14` | Direct | Hourly |
 | Base map | Esri (dark grey canvas) / OpenStreetMap | Direct tiles | — |
@@ -381,7 +381,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `GET /api/search` | Place search | Lightning Weather X |
 | `GET /api/weather-layers` | Old EUMETSAT layer list | **Lightning Weather X — keep it** |
 | `GET /api/pmd-radar` | PMD radar list (manifest), cached 2 min | WAPK Maps |
-| `GET /api/pollen` | Latest PMD pollen report + up to 30 days of history (cached 15 min) | WAPK Health |
+| `GET /api/pollen` | `stations[]` (Islamabad, Lahore): latest report + up to 30 days of history each (cached 15 min). Top-level `latest`/`station`/`history` repeat Islamabad for older pages. | WAPK Health |
 | `GET /api/satellite` | Satellite products, their stored times (`frames`) and image addresses | WAPK Maps |
 | `GET /api/satellite/<product>?t=<time>` | One stored satellite image (cached 1 day in browsers) | WAPK Maps |
 
@@ -390,8 +390,8 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 1. **Lightning:** fetch the lightning-alerts `/buffer`, keep strikes inside Pakistan from the last 24 h, store in D1.
 2. **Satellite:** fetch up to **6** images (3 at a time) from EUMETSAT: newest first, then fill missing hourly images
    of the past 24 h; delete images older than 24 h.
-3. **Pollen:** if the last read is more than **3 hours** old, read PMD's pollen page, store/replace that PMD date's
-   report, delete reports older than **120 days**.
+3. **Pollen:** for each station (Islamabad, Lahore) whose last read is more than **3 hours** old, read its PMD page,
+   store/replace that PMD date's report, delete reports older than **120 days**. One station failing doesn't stop the other.
 
 ### D1 tables (`lightning-pk-strikes`)
 
@@ -400,7 +400,8 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `strikes` | One row per strike (id, lat, lon, timestamp, raw JSON) |
 | `ingest_runs` | A log of each strike refresh |
 | `satellite_frames` | Satellite images: product, time, image bytes (key = product + time) |
-| `pollen_reports` | One PMD pollen report per date: `report_date` (key), `label`, `fetched_at`, `data` (JSON: sites + types) |
+| `pollen_daily` | One PMD pollen report per station and date: `station`, `report_date` (key together), `label`, `fetched_at`, `data` (JSON: sites, types, notes, thresholds) |
+| `pollen_reports` | **Old, unused** (first Islamabad-only version, 1 row). Safe to delete. |
 | `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
 
 **Backups of earlier worker versions** are kept in Claude's scratchpad (`lwx-backup/worker-pk*`) — treat them as temporary.
@@ -567,11 +568,15 @@ Opened from **Health** in the sidebar (address `#healthView`). Code: `health.js`
 |---|---|---|
 | **Health alerts** | Every alert for today + next 2 days, worst first. The same alert on several days is one card ("Today, Tomorrow, Friday"). | All of the below |
 | **Air quality** | US AQI dial + category + advice; PM2.5, PM10, O₃, NO₂, SO₂, CO, dust (µg/m³); highest AQI each of 4 days | Open-Meteo Air Quality (CAMS) |
-| **Pollen allergy** | PMD's latest Islamabad count: each pollen type, PMD's level (Absent/Low/Moderate/High/Very high), count, 14-day trend | PMD via `/api/pollen` |
-| **Dengue mosquito risk** | Today's level, the four factors with meters, 7-day strip, prevention advice | Calculated from Open-Meteo weather |
+| **Pollen allergy** | Station switch (nearest first: Islamabad / Lahore); each pollen type with PMD's level (Absent/Low/Moderate/High/Very high), count, 14-day trend; PMD's notes; thresholds on hover; a warning when PMD hasn't published for > 3 days | PMD via `/api/pollen` |
+| **Seasonal disease risks** | 8 weather-related illnesses: today's level + 7-day strip each, sorted by risk. Tap one for why (factor meters), symptoms and prevention. | Calculated from Open-Meteo weather, air quality and PMD pollen |
 | **Heat, cold and UV** | 7 days: feels-like low/high, UV max, rain | Open-Meteo |
 
 ### PMD pollen — details
+
+Two stations. The card opens on the one nearest the chosen place.
+
+**Islamabad** — PMD Research & Development, pollen monitoring
 
 - Page: https://weather.gov.pk/rnd/pollen-data — "Islamabad Pollen Count (Last 24 Hours)".
 - The numbers are written into the page's script as `rows.push({ type: "Grasses", 'H-8': "24", 'E-8': null, …, category: "High" })`,
@@ -584,22 +589,92 @@ Opened from **Health** in the sidebar (address `#healthView`). Code: `health.js`
   Paper mulberry is Islamabad's big spring allergy cause (Feb–April).
 - **Levels are PMD's own** (each pollen type has its own thresholds) — WAPK does not recalculate them.
 - History builds by one report per PMD day (trend shows "building" until there are 2).
-- **Pollen alerts only appear within 150 km of Islamabad.** Farther away the card still shows, with a distance note.
 
-### Dengue mosquito risk — how it is calculated
+**Lahore** — PMD Flood Forecasting Division (FFD)
 
-There is **no open feed of dengue cases** in Pakistan (NIH and provincial health departments publish PDFs/dashboards).
-So WAPK estimates how favourable the **weather** is for *Aedes* mosquitoes. Points per day (0–8):
+- Page: https://ffd.pmd.gov.pk/pollen — "Pollen Count — Lahore City", Burkard volumetric spore trap, updated daily
+  **during the pollen season** (spring and autumn; outside it the last count stays up — e.g. 7 Oct 2026 on 28 Oct).
+- Plain HTML. The worker's `parseFfdPollen()` reads: "Sample: <strong>06 Oct 2026</strong> … Analysis: 07 Oct 2026"
+  (the report date is the analysis date), the `pollen-table` rows (type / count / category badge), the "Notes:" line, and
+  the "Category Thresholds" table.
+- PMD's Lahore thresholds (grains/m³, Low / Moderate / High): Paper Mulberry, Acacia, Eucalyptus, Pines ≥ 1 / 14 / 90;
+  Grass ≥ 1 / 5 / 20; Alternaria ≥ 1 / 6500 / 13000; Dandelion, Cannabis ≥ 1 / 10 / 50. Absent = 0.
+
+**Both**
+
+- **Pollen alerts (and the pollen part of the asthma risk) only use a station within 150 km whose latest count is at most
+  3 days old.** Farther away or older, the card still shows the count with a distance or "not updated for N days" note.
+
+### Seasonal disease risks — how each is calculated
+
+There is **no open feed of disease cases** in Pakistan (NIH and provincial health departments publish PDFs/dashboards).
+So WAPK estimates how favourable the **conditions** are for each illness, per day, from the weather (with the past 14 days),
+air quality and PMD pollen. Levels: **Low · Moderate · High · Very high**. The card says clearly these are estimates.
+
+**1. Dengue** (Aedes mosquitoes; points 0–8)
 
 | Factor | 0 | 1 | 2 | 3 |
 |---|---|---|---|---|
 | Daily mean temperature | < 16 °C | 16–20 °C | 20–24 °C (or 32–35 → 2, > 35 → 1) | 24–32 °C (ideal) |
 | Daily mean humidity | < 50 % | 50–70 % | ≥ 70 % | |
 | Rain in the previous 14 days | < 5 mm | 5–25 mm | ≥ 25 mm | |
-| Season (Aug–Nov, Pakistan's dengue season) | other months | Aug–Nov | | |
+| Season Aug–Nov | other months | Aug–Nov | | |
 
-Total **0–2 Low · 3–4 Moderate · 5–6 High · 7–8 Very high**. Below 16 °C mean it is capped at Low (mosquitoes barely bite).
-High and Very high raise an alert. The card clearly says it is a weather estimate, not case counts.
+0–2 Low · 3–4 Moderate · 5–6 High · 7–8 Very high. Mean below 16 °C → Low.
+
+**2. Malaria** (Anopheles mosquitoes; points 0–8)
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Daily mean temperature | < 16 °C | 16–20 °C | 20–25 °C (or 30–33 → 2, > 33 → 1) | 25–30 °C (ideal) |
+| Daily mean humidity | < 50 % | 50–60 % | ≥ 60 % | |
+| Rain in the previous 14 days | < 10 mm | 10–40 mm | ≥ 40 mm | |
+| Season Jul–Nov | other months | Jul–Nov | | |
+
+0–2 Low · 3–4 Moderate · 5–6 High · 7–8 Very high. Mean below 16 °C → Low. **No rain pools (< 10 mm) → at most Moderate.**
+
+**3. Diarrhoea, cholera & typhoid** (water-borne; points 0–7)
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Daily maximum temperature | < 25 °C | 25–32 °C | 32–38 °C | ≥ 38 °C |
+| Rain in the last 3 days (incl. today) | < 5 mm | 5–20 mm | 20–50 mm | ≥ 50 mm (flooding) |
+| Season May–Sep | other months | May–Sep | | |
+
+0–1 Low · 2–3 Moderate · 4–5 High · 6–7 Very high.
+
+**4. Flu, colds & pneumonia** (points 0–6)
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Daily mean temperature | ≥ 20 °C | 15–20 °C | 10–15 °C | < 10 °C |
+| Day–night swing (max − min) | < 15 °C | ≥ 15 °C | | |
+| Dry air (mean humidity) | ≥ 40 % | < 40 % | | |
+| Season Nov–Feb | other months | Nov–Feb | | |
+
+0–1 Low · 2–3 Moderate · 4–5 High · 6 Very high.
+
+**5. Asthma & breathing problems** (points 0–8; no alert of its own — AQI, dust and pollen alerts cover it)
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Day's highest US AQI | ≤ 100 | 101–150 | 151–200 | > 200 |
+| Dust | < 200 µg/m³ | ≥ 200 | ≥ 500 | |
+| PMD pollen (nearby, fresh, today/tomorrow only) | below High | High | Very high | |
+| Cold dry air (min ≤ 5 °C and humidity < 40 %) | no | yes | | |
+
+0–1 Low · 2 Moderate · 3–4 High · 5+ Very high.
+
+**6. Heatstroke & dehydration** (no alert of its own — heat alerts cover it): feels-like max < 35 Low · 35–41 Moderate ·
+41–54 High · ≥ 54 Very high (NOAA heat index).
+
+**7. Pink eye & skin infections** (monsoon): mean ≥ 25 °C & humidity ≥ 60 % Moderate · ≥ 28 °C & ≥ 70 % High ·
+≥ 30 °C & ≥ 80 % Very high; one level higher after ≥ 20 mm rain in 3 days.
+
+**8. Carbon monoxide (gas heaters / angeethis)**: night low ≤ 5 °C Moderate · ≤ 0 °C High · ≤ −5 °C Very high.
+
+**Alerts:** dengue, malaria, water-borne, flu, pink eye and carbon monoxide raise an alert at High (moderate severity) or
+Very high (high severity).
 
 ### Alert rules (today + next 2 days)
 
@@ -616,8 +691,8 @@ High and Very high raise an alert. The card clearly says it is a weather estimat
 | Dust storm conditions / Dusty air | Dust ≥ 500 / ≥ 200 µg/m³ | high / moderate |
 | Smog / Fog | Visibility < 1 km (smog if AQI > 150 too) | high / moderate |
 | Thunderstorms (with possible hail) | Day's classified code is a storm (section 13); hail or severe strength → high | moderate / high |
-| Dengue mosquito risk | High / Very high | moderate / high |
-| Pollen high / very high | Any type High / Very high in PMD's latest count, place within 150 km of Islamabad | moderate / high |
+| Disease risks (dengue, malaria, water-borne, flu, pink eye, carbon monoxide) | High / Very high | moderate / high |
+| Pollen high / very high | Any type High / Very high in the nearest PMD count (within 150 km, ≤ 3 days old) | moderate / high |
 
 Heat bands follow the NOAA heat index; AQI bands are the US EPA's.
 
@@ -678,7 +753,7 @@ markers.
 | ECMWF new run available (00Z / 12Z) | ≈ 07:40–08:00 UTC and 19:40–20:00 UTC (≈ 1 PM / 1 AM PKT) | ECMWF |
 | Map data check/build | Every 3 hours at :25 UTC | GitHub Actions |
 | Lightning + satellite fetch | Every 5 minutes | Cloudflare Worker cron |
-| PMD pollen page read | Every 3 hours (first cron run after 3 h) | Cloudflare Worker cron |
+| PMD pollen pages read (Islamabad, Lahore) | Every 3 hours each (first cron run after 3 h) | Cloudflare Worker cron |
 | PMD radar list cache | 2 minutes in the worker; browser refreshes every 5 min | Worker / browser |
 | Satellite list refresh in browser | Every 5 minutes | Browser |
 | Lightning auto-refresh in browser | Every 15 minutes (if on) | Browser |
@@ -810,7 +885,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen →
 | Satellite blank or "preparing" | Worker hasn't stored that product yet, or EUMETSAT slow | Wait 5–10 min; check `/api/satellite`. |
 | Satellite history short | Table recently emptied | Fills in about 5 hours. |
 | PMD radar not showing | Usually PMD offline or simply no rain | Check `https://ffd.pmd.gov.pk/radar/manifest` → `latest_at`. Don't debug code first. |
-| Pollen card shows an old date | PMD hasn't updated, or PMD changed its page | Compare with https://weather.gov.pk/rnd/pollen-data. If the page shows a newer date, check worker logs for "pollen refresh failed" and update `parsePmdPollen()`. |
+| Pollen card shows an old date | PMD hasn't updated (Lahore pauses outside the pollen season), or PMD changed its page | Compare with the PMD page (Islamabad https://weather.gov.pk/rnd/pollen-data, Lahore https://ffd.pmd.gov.pk/pollen). If it shows a newer date, check worker logs for "pollen station failed" and update `parsePmdPollen()` / `parseFfdPollen()`. |
 | Site change not visible | Browser cache | Bump `?v=` in `index.html`; Ctrl+F5. |
 | Current conditions show "Forecast model estimate" | No airport within radius or METAR older than 90 min | Normal behaviour. |
 | Open-Meteo errors | Rate limit or outage | Wait; site shows a retry message. |
@@ -837,7 +912,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen →
 13. **ECMWF credit (CC-BY-4.0)** must stay on the map.
 14. Open-Meteo is free only for **non-commercial** use.
 15. Don't change **global git settings** on your PC (repo-local only).
-16. Dengue risk is a **weather estimate**, never present it as case data. Health text is general guidance, not medical advice.
+16. Disease risks are **weather estimates**, never present them as case data. Health text is general guidance, not medical advice.
 17. Pollen levels are **PMD's categories** — don't recalculate them; keep the PMD credit on the Health page.
 
 ---
@@ -846,6 +921,8 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen →
 
 - **Old D1 table `satellite_images`** (≈ 3 MB) is unused and can be dropped:
   `npx wrangler d1 execute lightning-pk-strikes -c wrangler-pk.jsonc --remote --command "DROP TABLE IF EXISTS satellite_images"`
+- **Old D1 table `pollen_reports`** (1 row) is unused since Lahore was added:
+  `npx wrangler d1 execute lightning-pk-strikes -c wrangler-pk.jsonc --remote --command "DROP TABLE IF EXISTS pollen_reports"`
 - **Lightning Weather X site fixes** in `D:\Lightning Weather x\public` were never deployed (`npm run cf:pages:deploy`).
 - **METAR API bugs** (section 12) could be fixed at the API itself if its source is available.
 - **Possible future:** a "Thunderstorm & hail risk" map layer from the ECMWF grid (approximate — no probability or lifted
