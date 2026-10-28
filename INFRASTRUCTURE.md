@@ -112,7 +112,8 @@ Make a new one the same way and paste it into the secret.
 | Folder | What is in it |
 |---|---|
 | `D:\Test Weather webapp` | **The WAPK website + map pipeline.** Git repo, pushed to GitHub `mashhooddroid-sudo/wapk`. |
-| `D:\Lightning Weather x` | Lightning Weather X sites **and the backend worker** WAPK uses (`worker-pk\index.js`). **Not a git repo — back up files before editing.** |
+| `D:\Test Weather webapp\worker` | **The backend worker** WAPK uses (`index.js`, `wrangler.jsonc`, `migrations\`). In git and on GitHub since 28 Oct 2026. |
+| `D:\Lightning Weather x` | Lightning Weather X sites. Its `worker-pk\` folder is the **old copy** of the worker — no longer edited; use `worker\` in the WAPK repo. Not a git repo. |
 | `D:\Last stable build codes\weather_app` | Your Flutter app "Weather & Prayer Alert PK" (v1.8.4+108). Source of the thunderstorm/hail rules. |
 
 ### Inside `D:\Test Weather webapp`
@@ -370,9 +371,9 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 |---|---|
 | Name | `lightning-weatherx-pk-api` |
 | Address | https://lightning-weatherx-pk-api.mashhood-droid.workers.dev |
-| Source | `D:\Lightning Weather x\worker-pk\index.js` |
-| Config | `D:\Lightning Weather x\wrangler-pk.jsonc` |
-| Deploy command | `npx wrangler deploy -c wrangler-pk.jsonc` (run inside `D:\Lightning Weather x`) |
+| Source | `D:\Test Weather webapp\worker\index.js` |
+| Config | `D:\Test Weather webapp\worker\wrangler.jsonc` |
+| Deploy command | `npx wrangler deploy` (run inside `D:\Test Weather webapp\worker`) |
 | **Do NOT use** | `npm run cf:worker:deploy` — that deploys a *different* worker (`lightning-weatherx-api`, for Lightning Weather X) |
 | Cron | `*/5 * * * *` — every 5 minutes |
 | Database | D1 `lightning-pk-strikes` (binding `DB`, id `6d611c66-f3a0-4046-a384-e3e86bd5fdad`) |
@@ -413,7 +414,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `pollen_reports` | **Old, unused** (first Islamabad-only version, 1 row). Safe to delete. |
 | `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
 
-**Backups of earlier worker versions** are kept in Claude's scratchpad (`lwx-backup/worker-pk*`) — treat them as temporary.
+**Earlier worker versions** are in git history (`git log -- worker/`). Commit worker changes like any other file.
 
 ---
 
@@ -886,9 +887,9 @@ Build locally with temp files on D: (C: is nearly full) — set `TEMP` and `TMP`
 ### C. The worker
 
 ```bash
-cd "D:\Lightning Weather x"
-# back up worker-pk\index.js first (no git here)
-npx wrangler deploy -c wrangler-pk.jsonc
+cd "D:\Test Weather webapp\worker"
+npx wrangler deploy
+# then commit and push the change
 ```
 
 ### D. Code backup to GitHub
@@ -938,7 +939,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen →
 Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → `fetchedAt`, `count`.
 
 **See worker logs live**
-`npx wrangler tail lightning-weatherx-pk-api` (inside `D:\Lightning Weather x`).
+`npx wrangler tail lightning-weatherx-pk-api` (inside `D:\Test Weather webapp\worker`).
 
 ---
 
@@ -970,9 +971,10 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
 5. The data site **needs `404.html`** (the pipeline writes it — don't remove that code).
 6. Python's default downloader is **blocked by Cloudflare** — the pipeline sends a `User-Agent`; keep it.
-7. **Worker deploy:** `npx wrangler deploy -c wrangler-pk.jsonc` — not `npm run cf:worker:deploy`.
+7. **Worker deploy:** `npx wrangler deploy` inside the repo's `worker\` folder — not `npm run cf:worker:deploy` in
+   Lightning Weather X (that deploys a different worker).
 8. **`/api/weather-layers` must stay** in the worker — Lightning Weather X uses it.
-9. `D:\Lightning Weather x` **has no git** — back up before editing.
+9. The worker's source of truth is `worker\` in this repo; `D:\Lightning Weather x\worker-pk` is an old copy.
 10. Keep storm/hail thresholds **identical** between `weather-logic.js` and the Flutter app.
 11. ECMWF has **no 900 hPa** and **no free visibility or official freezing level** — that's why 925 hPa and a calculated
     freezing level are used.
@@ -988,9 +990,9 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 ## 21. Open items
 
 - **Old D1 table `satellite_images`** (≈ 3 MB) is unused and can be dropped:
-  `npx wrangler d1 execute lightning-pk-strikes -c wrangler-pk.jsonc --remote --command "DROP TABLE IF EXISTS satellite_images"`
+  `npx wrangler d1 execute lightning-pk-strikes --remote --command "DROP TABLE IF EXISTS satellite_images"`
 - **Old D1 table `pollen_reports`** (1 row) is unused since Lahore was added:
-  `npx wrangler d1 execute lightning-pk-strikes -c wrangler-pk.jsonc --remote --command "DROP TABLE IF EXISTS pollen_reports"`
+  `npx wrangler d1 execute lightning-pk-strikes --remote --command "DROP TABLE IF EXISTS pollen_reports"`
 - **Lightning Weather X site fixes** in `D:\Lightning Weather x\public` were never deployed (`npm run cf:pages:deploy`).
 - **METAR API bugs** (section 12) could be fixed at the API itself if its source is available.
 - **Possible future:** a "Thunderstorm & hail risk" map layer from the ECMWF grid (approximate — no probability or lifted

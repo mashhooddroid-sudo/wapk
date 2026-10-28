@@ -1,0 +1,30 @@
+{
+  "name": "lightning-weatherx-pk-api",
+  "main": "index.js",
+  "compatibility_date": "2026-06-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "lightning-pk-strikes",
+      "database_id": "6d611c66-f3a0-4046-a384-e3e86bd5fdad",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "vars": {
+    "STRIKES_ENDPOINT": "https://lightning-alerts.mashhoodiqbal493.workers.dev/buffer",
+    "EUMETSAT_WMS_CAPABILITIES": "https://view.eumetsat.int/geoserver/ows?service=WMS&version=1.3.0&request=GetCapabilities",
+    "EUMETSAT_WMS_ENDPOINT": "https://view.eumetsat.int/geoserver/ows",
+    "REFRESH_INTERVAL_SECONDS": "300",
+    "AGGREGATE_LIMIT": "20000"
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    }
+  }
+}
