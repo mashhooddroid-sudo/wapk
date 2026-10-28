@@ -124,7 +124,9 @@ Make a new one the same way and paste it into the secret.
 | `radar.css` | Look of the Maps screen (layer rail, timeline, satellite bar, legend). |
 | `app.js` | Overview / Hourly / Week: fetches the forecast, METAR, air quality, city search; draws everything. |
 | `weather-logic.js` | Thunderstorm, hail and fog rules ported from your Flutter app. |
-| `health.js` | Health section: alerts, air quality, PMD pollen, dengue mosquito risk, heat/cold/UV. |
+| `health.js` | Health section: alerts, air quality, PMD pollen, seasonal disease risks, heat/cold/UV. |
+| `borders.json` | Country borders, coastlines and Pakistan's provinces for the map (≈ 465 KB, ≈ 167 KB compressed). Built by `pipeline/build_borders.py`. |
+| `pipeline/build_borders.py` | Makes `borders.json` from Natural Earth 1:10m data (Pakistan point of view), cropped and simplified. |
 | `icons.js` | All the drawn icons (weather icons and small UI icons). |
 | `views.js` | Switching between screens (Overview, Maps, Health), settings panel open/close. |
 | `effects.js` | Visual effects (cursor trail, glass). |
@@ -145,8 +147,8 @@ Make a new one the same way and paste it into the secret.
 - **Hosting:** Cloudflare Pages project **`wapk`**, account mashhood.droid.
 - **Address:** https://wapk.pages.dev
 - **Type:** static files only. No build step, no framework. Leaflet 1.9.4 for the map.
-- **The eleven files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
-  styles.css, radar.css, weather-logic.js, health.js`. **Nothing else.**
+- **The twelve files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
+  styles.css, radar.css, weather-logic.js, health.js, borders.json`. **Nothing else.**
 
 ### Screens
 
@@ -781,8 +783,23 @@ Heat bands follow the NOAA heat index; AQI bands are the US EPA's.
 
 ### Map layer stacking (bottom to top)
 
-Base map → forecast colours (300) → satellite (320) → PMD radar (350) → wind particles (380) → place labels (390) →
-markers.
+Base map → forecast colours (300) → satellite (320) → PMD radar (350) → wind particles (380) → **borders (385)** →
+place labels (390) → Leaflet overlays (400) → fires (410) → markers.
+
+### Borders (like Windy)
+
+- Drawn by `radar.js` from `borders.json`, on their own canvas pane (z-index 385) **above the forecast colours and
+  wind**, so they stay readable on every layer (the base map's own borders fade under the colours).
+- Style: thin light line (1.15 px) over a soft dark halo (3.4 px) in dark theme; dark navy line with a white halo in
+  light theme. Coastlines come from the same country outlines.
+- **Pakistan's provinces** (Punjab, Sindh, KP, Balochistan, Gilgit-Baltistan, AJK, Islamabad) are dashed and fainter,
+  shown from zoom 5.
+- **Data:** Natural Earth 1:10m, public domain. Countries use Natural Earth's **Pakistan point-of-view** file
+  (`ne_10m_admin_0_countries_pak`), so Kashmir is drawn as Pakistan shows it. The province data predates 2018, so
+  `build_borders.py` removes the old FATA–KP line (FATA merged into KP).
+- Rebuild: download `ne_10m_admin_0_countries_pak.geojson` and `ne_10m_admin_1_states_provinces.geojson` from
+  github.com/nvkelso/natural-earth-vector (geojson folder), run
+  `python pipeline/build_borders.py <countries> <provinces> borders.json`, and bump `BORDER_FILE`'s `?v=` in `radar.js`.
 
 ---
 
@@ -831,9 +848,9 @@ markers.
 # 1. Check the account
 npx wrangler whoami          # must say Mashhood.droid@gmail.com's Account
 
-# 2. Copy ONLY the eleven site files into an empty folder (never deploy the project folder itself)
+# 2. Copy ONLY the twelve site files into an empty folder (never deploy the project folder itself)
 mkdir C:\temp\wapk-dist
-copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js C:\temp\wapk-dist\
+copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js borders.json C:\temp\wapk-dist\
 
 # 3. Deploy
 npx wrangler pages deploy C:\temp\wapk-dist --project-name wapk --branch main
@@ -941,7 +958,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 
 ## 20. Rules and gotchas to never forget
 
-1. **Deploy only the eleven site files**, never the whole project folder (`.openai/` and `test.txt` are private).
+1. **Deploy only the twelve site files**, never the whole project folder (`.openai/` and `test.txt` are private).
 2. **Always check `npx wrangler whoami`** shows mashhood.droid before deploying.
 3. **Bump `?v=`** in `index.html` for every changed JS/CSS file.
 4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
