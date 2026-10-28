@@ -562,6 +562,13 @@ current hour.
 
 Opened from **Health** in the sidebar (address `#healthView`). Code: `health.js`. Everything is for the chosen place.
 
+**Layout** (compact, fits one desktop screen): a strip of four summary tiles (Air quality · Pollen · Top disease risk ·
+Heat & UV today) → a tabbed panel (**Diseases · Air · Pollen · Week**, the last tab used is remembered in
+`wapk.healthTab`) with the **Alerts** list beside it (on narrower screens the alerts sit above the panel). Tapping a tile
+opens its tab. Alerts are one line each — tap for details and advice; more than 4 hide behind "Show N more". The
+Diseases tab lists Moderate-and-up risks with coloured dots for 7 days; low risks hide behind a button. Pollen hides
+undetected types in one line. The week is shown as columns (days across).
+
 ### Cards
 
 | Card | What it shows | Source |

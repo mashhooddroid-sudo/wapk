@@ -21,7 +21,8 @@
   const finite = (value) => typeof value === 'number' && Number.isFinite(value);
   const ui = (name) => window.AtmosIcons?.ui(name) || '';
   const levelClass = (level) => (level || 'low').toLowerCase().replace(' ', '-');
-  const state = { key: null, loadedAt: 0, data: null, request: 0, visible: false, pollenStation: null };
+  const state = { key: null, loadedAt: 0, data: null, request: 0, visible: false, pollenStation: null, tab: savedTab() };
+  function savedTab() { try { return localStorage.getItem('wapk.healthTab') || 'diseases'; } catch { return 'diseases'; } }
 
   function element(tag, className, content) {
     const node = document.createElement(tag);
@@ -427,40 +428,126 @@
   }
 
   // ── Rendering ─────────────────────────────────────────────────────────────
+  //
+  // Compact layout: a summary strip of four tiles (each opens its tab), a tabbed detail panel (Diseases · Air ·
+  // Pollen · Week) and a one-line-per-alert list beside it. Details (advice, factors, symptoms) open on tap.
+
+  const TABS = ['diseases', 'air', 'pollen', 'week'];
+  const TAB_KEY = 'wapk.healthTab';
+  const ALERTS_SHOWN = 4;
 
   function render() {
     if (!state.data) return;
     const days = dailySeries();
     const risks = assessAll(days);
+    renderSummary(days, risks);
     renderAlerts(buildAlerts(days, risks));
     renderAir();
     renderPollen();
     renderDiseases(days, risks);
     renderWeatherRisks(days);
+    selectTab(state.tab, false);
     const updated = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(state.loadedAt));
     byId('healthUpdated').textContent = `Updated ${updated}`;
   }
 
+  function selectTab(tab, focus) {
+    state.tab = TABS.includes(tab) ? tab : 'diseases';
+    try { localStorage.setItem(TAB_KEY, state.tab); } catch { /* the choice still applies for this visit */ }
+    document.querySelectorAll('[data-health-tab]').forEach((button) => {
+      const active = button.dataset.healthTab === state.tab;
+      if (button.getAttribute('role') !== 'tab') { button.classList.toggle('is-active', active); return; }
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active && focus) button.focus();
+    });
+    TABS.forEach((name) => { byId(`healthPanel-${name}`).hidden = name !== state.tab; });
+  }
+
+  // Four tiles: air quality, pollen, the highest disease risk, and heat & UV — today at a glance.
+  function renderSummary(days, risks) {
+    const strip = byId('healthSummary');
+    strip.replaceChildren();
+    const tile = (tab, tone, label, value, sub, icon) => {
+      const button = element('button', `health-tile is-${tone}`);
+      button.type = 'button';
+      button.dataset.healthTab = tab;
+      const art = element('span', 'health-tile-icon');
+      art.innerHTML = ui(icon);
+      const text = element('span', 'health-tile-text');
+      text.append(element('span', 'health-tile-label', label), element('strong', 'health-tile-value', value), element('span', 'health-tile-sub', sub));
+      button.append(art, text);
+      button.addEventListener('click', () => {
+        selectTab(tab, false);
+        byId('healthPanel').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+      strip.append(button);
+    };
+
+    const aqi = state.data.air?.current?.us_aqi;
+    if (finite(aqi)) {
+      const [, label, key] = aqiLevel(aqi);
+      tile('air', `aqi-${key}`, 'Air quality', `AQI ${Math.round(aqi)}`, label, 'leaf');
+    } else tile('air', 'none', 'Air quality', '—', 'Unavailable', 'leaf');
+
+    const station = pollenStations()[0];
+    if (station) {
+      const top = station.latest.types.reduce((best, item) => Math.max(best, pollenRank(item.category)), 0);
+      const age = daysBetween(station.latest.date, localToday(state.data.weather?.utc_offset_seconds));
+      const word = POLLEN_WORDS[top];
+      tile('pollen', `pollen-${pollenClass(word)}`, `Pollen · ${station.name}`, word.charAt(0).toUpperCase() + word.slice(1),
+        age > POLLEN_FRESH_DAYS ? `Last count ${shortDate(station.latest.date)}` : station.distance > POLLEN_NEAR_KM ? `${Math.round(station.distance)} km away` : 'PMD count', 'flower');
+    } else tile('pollen', 'none', 'Pollen', '—', 'Unavailable', 'flower');
+
+    const ranked = risks.filter((entry) => entry.days[0]).sort((a, b) => LEVELS.indexOf(b.days[0].level) - LEVELS.indexOf(a.days[0].level));
+    const worst = ranked[0];
+    if (worst && worst.days[0].level !== 'Low') {
+      const more = ranked.filter((entry) => entry.days[0].level !== 'Low').length - 1;
+      tile('diseases', `risk-${levelClass(worst.days[0].level)}`, 'Top disease risk', worst.disease.name, `${worst.days[0].level}${more > 0 ? ` · +${more} more` : ''}`, worst.disease.icon);
+    } else tile('diseases', 'risk-low', 'Disease risks', 'All low', 'Seasonal illnesses', 'heart');
+
+    const today = days[0];
+    if (today) {
+      const tone = today.feelsMax >= 41 || today.uv >= 11 ? 'risk-high' : today.feelsMax >= 35 || today.uv >= 8 ? 'risk-moderate' : today.min <= 0 ? 'cold' : 'risk-low';
+      tile('week', tone, 'Heat & UV today', `${degrees(today.feelsMax)} feels like`, `UV ${finite(today.uv) ? Math.round(today.uv) : '—'} · low ${degrees(today.min)}`, 'thermometer');
+    }
+  }
+
+  function shortDate(date) {
+    return new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00Z`));
+  }
+
+  // One line per alert; tapping shows the details and advice. The first few are listed, the rest behind a button.
   function renderAlerts(alerts) {
     const list = byId('healthAlerts');
     list.replaceChildren();
-    byId('healthAlertCount').textContent = alerts.length ? `${alerts.length} active` : 'All clear';
-    byId('healthAlertCount').className = `health-count ${alerts.length ? `is-${alerts[0].severity}` : 'is-clear'}`;
+    const count = byId('healthAlertCount');
+    count.textContent = alerts.length ? String(alerts.length) : 'All clear';
+    count.className = `health-count ${alerts.length ? `is-${alerts[0].severity}` : 'is-clear'}`;
     if (!alerts.length) {
       list.append(element('p', 'health-clear', 'No health alerts for the next three days.'));
       return;
     }
-    alerts.forEach((alert) => {
-      const item = element('article', `health-alert is-${alert.severity}`);
+    const items = alerts.map((alert) => {
+      const item = element('details', `health-alert is-${alert.severity}`);
+      const summary = element('summary');
       const art = element('span', 'health-alert-icon');
       art.innerHTML = ui(alert.icon);
+      const text = element('span', 'health-alert-text');
+      text.append(element('strong', '', alert.title), element('span', 'health-when', alert.when));
+      summary.append(art, text);
       const body = element('div', 'health-alert-body');
-      const top = element('div', 'health-alert-top');
-      top.append(element('strong', '', alert.title), element('span', 'health-when', alert.when));
-      body.append(top, element('p', '', alert.detail), element('p', 'health-advice', alert.advice));
-      item.append(art, body);
-      list.append(item);
+      body.append(element('p', '', alert.detail), element('p', 'health-advice', alert.advice));
+      item.append(summary, body);
+      return item;
     });
+    items.forEach((item, index) => { item.hidden = index >= ALERTS_SHOWN; list.append(item); });
+    if (items.length > ALERTS_SHOWN) {
+      const more = element('button', 'health-more', `Show ${items.length - ALERTS_SHOWN} more`);
+      more.type = 'button';
+      more.addEventListener('click', () => { items.forEach((item) => { item.hidden = false; }); more.remove(); });
+      list.append(more);
+    }
   }
 
   function renderAir() {
@@ -479,21 +566,19 @@
     const pollutants = element('div', 'aqi-pollutants');
     [['PM2.5', 'pm2_5'], ['PM10', 'pm10'], ['O₃', 'ozone'], ['NO₂', 'nitrogen_dioxide'], ['SO₂', 'sulphur_dioxide'], ['CO', 'carbon_monoxide'], ['Dust', 'dust']].forEach(([name, field]) => {
       const value = current[field];
-      const tile = element('div', 'aqi-pollutant');
-      tile.append(element('span', '', name), element('strong', '', finite(value) ? String(Math.round(value)) : '—'), element('small', '', 'µg/m³'));
-      pollutants.append(tile);
+      const cell = element('div', 'aqi-pollutant');
+      cell.append(element('span', '', name), element('strong', '', finite(value) ? String(Math.round(value)) : '—'));
+      pollutants.append(cell);
     });
     const outlook = element('div', 'aqi-outlook');
     [...dailyExtreme(air.hourly, 'us_aqi')].slice(0, 4).forEach(([date, value], index) => {
       const [, dayLabel, dayKey] = aqiLevel(value);
-      const col = element('div', 'aqi-day');
-      const bar = element('span', `aqi-bar is-${dayKey}`);
-      bar.style.height = `${Math.max(8, Math.min(100, value / 3))}%`;
-      bar.title = `${dayLabel}, up to ${Math.round(value)}`;
-      col.append(element('strong', '', String(Math.round(value))), bar, element('span', '', shortDay(date, index)));
-      outlook.append(col);
+      const chip = element('span', `aqi-chip is-${dayKey}`);
+      chip.title = `${dayLabel}, highest ${Math.round(value)}`;
+      chip.append(element('span', '', shortDay(date, index)), element('strong', '', String(Math.round(value))));
+      outlook.append(chip);
     });
-    body.append(head, pollutants, element('p', 'health-subhead', 'Highest AQI each day'), outlook);
+    body.append(head, element('p', 'health-subhead', 'Pollutants now · µg/m³'), pollutants, element('p', 'health-subhead', 'Highest AQI each day'), outlook);
   }
 
   function renderPollen() {
@@ -502,7 +587,11 @@
     const stations = pollenStations();
     if (!stations.length) { body.append(element('p', 'empty-state', 'PMD pollen data is temporarily unavailable.')); return; }
     const station = stations.find((item) => item.id === state.pollenStation) || stations[0];
-    // Station switch (nearest first).
+    const latest = station.latest;
+    const age = daysBetween(latest.date, localToday(state.data.weather?.utc_offset_seconds));
+    const top = latest.types.reduce((best, item) => (pollenRank(item.category) > pollenRank(best) ? item.category : best), 'Absent');
+
+    const bar = element('div', 'pollen-bar');
     const tabs = element('div', 'pollen-tabs');
     tabs.setAttribute('role', 'group');
     tabs.setAttribute('aria-label', 'Pollen station');
@@ -513,42 +602,39 @@
       button.addEventListener('click', () => { state.pollenStation = item.id; renderPollen(); });
       tabs.append(button);
     });
-    body.append(tabs);
-
-    const latest = station.latest;
-    const today = localToday(state.data.weather?.utc_offset_seconds);
-    const age = daysBetween(latest.date, today);
-    const top = latest.types.reduce((best, item) => (pollenRank(item.category) > pollenRank(best) ? item.category : best), 'Absent');
-    const head = element('div', 'pollen-head');
-    head.append(element('span', `pollen-chip is-${pollenClass(top)}`, `Overall ${top.toLowerCase()}`), element('span', 'health-when', latest.label));
-    body.append(head);
-    if (age > POLLEN_FRESH_DAYS) body.append(element('p', 'health-note is-warning', `PMD has not published a newer ${station.name} count for ${age} days. ${station.id === 'lahore' ? 'Lahore is counted during the pollen season (spring and autumn).' : 'It may be between pollen seasons.'}`));
-    if (station.distance > POLLEN_NEAR_KM) body.append(element('p', 'health-note', `Measured in ${station.name}, ${Math.round(station.distance)} km from ${state.data.city.name}. Your local levels may differ.`));
+    bar.append(tabs, element('span', `pollen-chip is-${pollenClass(top)}`, `Overall ${top.toLowerCase()}`));
+    body.append(bar, element('p', 'health-when pollen-date', latest.label));
+    const notes = [];
+    if (age > POLLEN_FRESH_DAYS) notes.push(element('p', 'health-note is-warning', `No newer ${station.name} count for ${age} days${station.id === 'lahore' ? ' — Lahore is counted during the pollen season.' : '.'}`));
+    if (station.distance > POLLEN_NEAR_KM) notes.push(element('p', 'health-note', `${Math.round(station.distance)} km from ${state.data.city.name}; local levels may differ.`));
+    body.append(...notes);
 
     const sites = latest.sites.filter((site) => latest.types.some((item) => finite(item.counts[site])));
-    const header = element('div', 'pollen-row pollen-row-head');
-    header.append(element('span', '', 'Pollen'), element('span', '', 'Level'), element('span', '', 'Count'), element('span', '', 'Trend'));
+    const present = latest.types.filter((item) => pollenRank(item.category) > 0).sort((a, b) => pollenRank(b.category) - pollenRank(a.category) || maxCount(b) - maxCount(a));
+    const absent = latest.types.filter((item) => pollenRank(item.category) === 0).map((item) => item.type);
     const list = element('div', 'pollen-list');
-    [...latest.types].sort((a, b) => pollenRank(b.category) - pollenRank(a.category) || maxCount(b) - maxCount(a)).forEach((item) => {
+    present.forEach((item) => {
       const row = element('div', 'pollen-row');
       const threshold = latest.thresholds?.[item.type];
       if (threshold) row.title = `${item.type}: low from ${threshold.low}, moderate from ${threshold.moderate}, high from ${threshold.high} grains/m³`;
-      row.append(element('span', 'pollen-name', item.type), element('span', `pollen-chip is-${pollenClass(item.category)}`, item.category || '—'),
+      row.append(element('span', 'pollen-name', item.type), element('span', `pollen-chip is-${pollenClass(item.category)}`, item.category),
         element('span', 'pollen-count', sites.map((site) => (finite(item.counts[site]) ? formatCount(item.counts[site]) : '—')).join(' / ')), pollenTrend(station, item.type));
       list.append(row);
     });
-    body.append(header, list);
-    if (latest.notes) body.append(element('p', 'health-note', `PMD note: ${latest.notes}`));
+    if (!present.length) list.append(element('p', 'health-clear', 'No pollen detected in the latest count.'));
+    body.append(list);
+    if (absent.length) body.append(element('p', 'health-note', `Not detected: ${absent.join(', ')}.`));
+    if (latest.notes) body.append(element('p', 'health-note', `PMD: ${latest.notes}`));
     const where = station.id === 'islamabad'
-      ? `PMD's Islamabad sampler${sites.length === 1 ? ` in sector ${sites[0]}` : sites.length ? `s in sectors ${sites.join(' / ')}` : 's'}`
-      : `PMD Flood Forecasting Division's ${station.name} sampler`;
+      ? `Islamabad sampler${sites.length === 1 ? ` (sector ${sites[0]})` : 's'}`
+      : `${station.name} sampler (Flood Forecasting Division)`;
     const source = element('p', 'health-note');
-    source.append(`Grains per m³ of air over 24 hours at ${where}. Levels are PMD's own. Source: `);
-    const link = element('a', '', station.source || 'PMD');
+    source.append(`Grains/m³ over 24 h at PMD's ${where}; levels are PMD's. `);
+    const link = element('a', '', 'Source');
     link.href = station.sourceUrl;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
-    source.append(link, '.');
+    source.append(link);
     body.append(source);
   }
 
@@ -563,7 +649,7 @@
   function pollenTrend(station, type) {
     const history = (station.history || []).slice(-14);
     const wrap = element('span', 'pollen-trend');
-    if (history.length < 2) { wrap.textContent = 'building'; wrap.classList.add('is-empty'); return wrap; }
+    if (history.length < 2) { wrap.title = 'The trend appears once PMD has published a second day.'; return wrap; }
     const counts = history.map((report) => report.types.find((item) => item.type === type)?.count ?? 0);
     const peak = Math.max(1, ...counts);
     counts.forEach((count, index) => {
@@ -575,17 +661,20 @@
     return wrap;
   }
 
+  // Risks at Moderate or above are listed; low ones sit behind a button. Each row opens for the reasons.
   function renderDiseases(days, risks) {
     const body = byId('healthDiseases');
     body.replaceChildren();
     if (!days.length) { body.append(element('p', 'empty-state', 'Weather data is temporarily unavailable.')); return; }
-    const order = (entry) => LEVELS.indexOf(entry.days[0]?.level ?? 'Low');
+    const rank = (entry) => LEVELS.indexOf(entry.days[0]?.level ?? 'Low');
+    const sorted = [...risks].sort((a, b) => rank(b) - rank(a));
     const header = element('div', 'disease-row disease-row-head');
     const dayLabels = element('span', 'disease-week');
-    days.slice(0, 7).forEach((day, index) => dayLabels.append(element('span', '', shortDay(day.date, index))));
-    header.append(element('span', '', 'Risk'), element('span', '', 'Level'), dayLabels);
-    body.append(header);
-    [...risks].sort((a, b) => order(b) - order(a)).forEach(({ disease, days: levels }) => {
+    days.slice(0, 7).forEach((day, index) => dayLabels.append(element('span', '', index === 0 ? 'Now' : shortDay(day.date, index).slice(0, 2))));
+    header.append(element('span', '', 'Illness'), element('span', '', 'Today'), dayLabels);
+    // Phones hide the header row, so the dots get a one-line caption instead.
+    body.append(header, element('p', 'disease-caption', 'Dots: today, then the next 6 days'));
+    const rows = sorted.map(({ disease, days: levels }) => {
       const today = levels[0];
       const item = element('details', 'disease');
       const summary = element('summary', 'disease-row');
@@ -593,18 +682,17 @@
       const art = element('span', 'disease-icon');
       art.innerHTML = ui(disease.icon);
       name.append(art, element('span', '', disease.name));
-      const chip = element('span', `risk-chip is-${levelClass(today?.level)}`, today?.level || '—');
       const week = element('span', 'disease-week');
       levels.forEach((result, index) => {
-        const dot = element('span', `risk-dot is-${levelClass(result?.level)}`, result ? SHORT_LEVEL[result.level] : '—');
-        dot.title = `${shortDay(days[index].date, index)}: ${result ? `${result.level} risk` : 'unavailable'}`;
+        const dot = element('i', `risk-dot is-${levelClass(result?.level)}`);
+        dot.title = `${index === 0 ? 'Today' : shortDay(days[index].date, index)}: ${result ? `${result.level} risk` : 'unavailable'}`;
         week.append(dot);
       });
-      summary.append(name, chip, week);
+      summary.append(name, element('span', `risk-chip is-${levelClass(today?.level)}`, today?.level || '—'), week);
       const detail = element('div', 'disease-detail');
-      detail.append(element('p', '', disease.about));
+      detail.append(element('p', 'disease-about', disease.about));
       if (today?.factors?.length) {
-        const factors = element('ul', 'dengue-factors');
+        const factors = element('ul', 'factor-list');
         today.factors.forEach((f) => {
           const li = element('li');
           const meter = element('span', 'factor-meter');
@@ -614,34 +702,50 @@
           li.append(element('span', 'factor-name', f.name), element('strong', '', f.value), meter, element('small', '', f.note));
           factors.append(li);
         });
-        detail.append(element('p', 'health-subhead', 'Why today'), factors);
+        detail.append(factors);
       }
-      detail.append(element('p', 'health-subhead', 'Symptoms'), element('p', '', disease.symptoms), element('p', 'health-subhead', 'Prevention'), element('p', '', disease.prevention));
+      const info = element('div', 'disease-info');
+      const block = (title, text) => { const div = element('div'); div.append(element('p', 'health-subhead', title), element('p', '', text)); return div; };
+      info.append(block('Symptoms', disease.symptoms), block('Prevention', disease.prevention));
+      detail.append(info);
       item.append(summary, detail);
-      body.append(item);
+      return { item, low: (today?.level ?? 'Low') === 'Low' };
     });
-    body.append(element('p', 'health-note', 'Estimated from the weather: how favourable conditions are for each illness — not a count of cases. Follow your district health department for outbreak alerts. Tap a risk for the reasons, symptoms and prevention.'));
+    const elevated = rows.filter((row) => !row.low);
+    if (!elevated.length) body.append(element('p', 'health-clear', 'All seasonal illness risks are low today.'));
+    rows.forEach((row) => { row.item.hidden = row.low && elevated.length > 0; body.append(row.item); });
+    const lows = rows.filter((row) => row.low);
+    if (elevated.length && lows.length) {
+      const more = element('button', 'health-more', `Show ${lows.length} low-risk illness${lows.length === 1 ? '' : 'es'}`);
+      more.type = 'button';
+      more.addEventListener('click', () => { lows.forEach((row) => { row.item.hidden = false; }); more.remove(); });
+      body.append(more);
+    }
+    body.append(element('p', 'health-note', 'Weather-based estimates of how favourable conditions are — not case counts. Tap an illness for the reasons, symptoms and prevention.'));
   }
 
+  // The week across: one column per day.
   function renderWeatherRisks(days) {
     const body = byId('healthWeather');
     body.replaceChildren();
     if (!days.length) { body.append(element('p', 'empty-state', 'Weather data is temporarily unavailable.')); return; }
-    const table = element('div', 'risk-table');
-    const head = element('div', 'risk-row risk-row-head');
-    ['Day', 'Feels like', 'UV max', 'Rain'].forEach((label) => head.append(element('span', '', label)));
-    table.append(head);
+    const grid = element('div', 'week-grid');
+    const labels = element('div', 'week-col week-labels-col');
+    ['', 'Feels like high', 'Feels like low', 'UV max', 'Rain'].forEach((label) => labels.append(element('span', '', label)));
+    grid.append(labels);
     days.slice(0, 7).forEach((day, index) => {
-      const row = element('div', 'risk-row');
-      const heat = !finite(day.feelsMax) ? '' : day.feelsMax >= 41 ? 'is-high' : day.feelsMax >= 35 ? 'is-moderate' : day.feelsMin <= -10 || day.min <= 0 ? 'is-cold' : '';
+      const col = element('div', `week-col${index === 0 ? ' is-today' : ''}`);
+      const heat = !finite(day.feelsMax) ? '' : day.feelsMax >= 41 ? 'is-high' : day.feelsMax >= 35 ? 'is-moderate' : '';
+      const cold = finite(day.feelsMin) && (day.feelsMin <= -10 || day.min <= 0) ? 'is-cold' : '';
       const uv = !finite(day.uv) ? '' : day.uv >= 11 ? 'is-high' : day.uv >= 8 ? 'is-moderate' : '';
-      row.append(element('span', 'risk-dayname', shortDay(day.date, index)),
-        element('span', `risk-value ${heat}`, `${degrees(day.feelsMin)} / ${degrees(day.feelsMax)}`),
+      col.append(element('strong', 'week-day', shortDay(day.date, index)),
+        element('span', `risk-value ${heat}`, degrees(day.feelsMax)),
+        element('span', `risk-value ${cold}`, degrees(day.feelsMin)),
         element('span', `risk-value ${uv}`, finite(day.uv) ? String(Math.round(day.uv)) : '—'),
-        element('span', 'risk-value', finite(day.rain) ? `${day.rain.toFixed(day.rain < 10 ? 1 : 0)} mm` : '—'));
-      table.append(row);
+        element('span', 'risk-value', finite(day.rain) ? `${day.rain.toFixed(day.rain < 10 ? 1 : 0)}` : '—'));
+      grid.append(col);
     });
-    body.append(table, element('p', 'health-note', 'Feels like combines temperature, humidity and wind. Heat caution from 35°, danger from 41°. UV 8+ very high, 11+ extreme.'));
+    body.append(grid, element('p', 'health-note', 'Rain in mm. Feels like combines temperature, humidity and wind: caution from 35°, danger from 41°. UV 8+ very high, 11+ extreme.'));
   }
 
   // ── Wiring ────────────────────────────────────────────────────────────────
@@ -653,6 +757,16 @@
   document.addEventListener('atmos:weather', () => { if (state.visible && state.data) render(); });
   document.addEventListener('atmos:unit', () => { if (state.visible && state.data) render(); });
   byId('healthRefresh')?.addEventListener('click', () => load(true));
+  // Tab bar: click, and arrow keys between tabs.
+  document.querySelectorAll('.health-tabs [data-health-tab]').forEach((button, index, all) => {
+    button.addEventListener('click', () => selectTab(button.dataset.healthTab, false));
+    button.addEventListener('keydown', (event) => {
+      const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      selectTab(all[(index + step + all.length) % all.length].dataset.healthTab, true);
+    });
+  });
 
   window.WapkHealth = Object.freeze({ show, hide });
 })();

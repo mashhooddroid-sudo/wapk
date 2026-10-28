@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20261028-42">
+  <link rel="stylesheet" href="styles.css?v=20261028-46">
   <link rel="stylesheet" href="radar.css?v=20261025-37">
 </head>
 <body>
@@ -123,28 +123,26 @@
         <button id="healthRefresh" class="save-button" type="button"><span data-icon="refresh"></span><span id="healthUpdated">Refresh</span></button>
       </div>
 
-      <section class="card health-card health-alerts-card" aria-labelledby="healthAlertsHeading">
-        <div class="section-heading"><div><h2 id="healthAlertsHeading">Health alerts</h2><p>Today and the next two days.</p></div><span id="healthAlertCount" class="health-count">Loading</span></div>
-        <div id="healthAlerts" class="health-alerts" aria-live="polite"><p class="empty-state">Checking for alerts…</p></div>
-      </section>
+      <div id="healthSummary" class="health-summary" aria-label="Today at a glance"><p class="empty-state">Loading…</p></div>
 
-      <div class="health-grid">
-        <section class="card health-card" aria-labelledby="healthAirHeading">
-          <div class="section-heading"><div><h2 id="healthAirHeading">Air quality</h2><p>US AQI and pollutants, with a four-day outlook.</p></div><span class="section-icon" data-icon="leaf"></span></div>
-          <div id="healthAir"><p class="empty-state">Loading air quality…</p></div>
+      <div class="health-layout">
+        <section id="healthPanel" class="card health-panel" aria-label="Health details">
+          <div class="health-tabs" role="tablist" aria-label="Health details">
+            <button type="button" role="tab" id="healthTab-diseases" data-health-tab="diseases" aria-controls="healthPanel-diseases" aria-selected="true"><span data-icon="mosquito"></span>Diseases</button>
+            <button type="button" role="tab" id="healthTab-air" data-health-tab="air" aria-controls="healthPanel-air" aria-selected="false" tabindex="-1"><span data-icon="leaf"></span>Air</button>
+            <button type="button" role="tab" id="healthTab-pollen" data-health-tab="pollen" aria-controls="healthPanel-pollen" aria-selected="false" tabindex="-1"><span data-icon="flower"></span>Pollen</button>
+            <button type="button" role="tab" id="healthTab-week" data-health-tab="week" aria-controls="healthPanel-week" aria-selected="false" tabindex="-1"><span data-icon="thermometer"></span>Week</button>
+          </div>
+          <div id="healthPanel-diseases" role="tabpanel" aria-labelledby="healthTab-diseases"><div id="healthDiseases" class="diseases"><p class="empty-state">Loading…</p></div></div>
+          <div id="healthPanel-air" role="tabpanel" aria-labelledby="healthTab-air" hidden><div id="healthAir"><p class="empty-state">Loading air quality…</p></div></div>
+          <div id="healthPanel-pollen" role="tabpanel" aria-labelledby="healthTab-pollen" hidden><div id="healthPollen"><p class="empty-state">Loading pollen count…</p></div></div>
+          <div id="healthPanel-week" role="tabpanel" aria-labelledby="healthTab-week" hidden><div id="healthWeather"><p class="empty-state">Loading…</p></div></div>
         </section>
-        <section class="card health-card" aria-labelledby="healthPollenHeading">
-          <div class="section-heading"><div><h2 id="healthPollenHeading">Pollen allergy</h2><p>PMD's daily pollen counts, Islamabad and Lahore.</p></div><span class="section-icon" data-icon="flower"></span></div>
-          <div id="healthPollen"><p class="empty-state">Loading pollen count…</p></div>
-        </section>
-        <section class="card health-card health-wide" aria-labelledby="healthDiseasesHeading">
-          <div class="section-heading"><div><h2 id="healthDiseasesHeading">Seasonal disease risks</h2><p>Weather-related illnesses common in Pakistan, today and the week ahead.</p></div><span class="section-icon" data-icon="mosquito"></span></div>
-          <div id="healthDiseases" class="diseases"><p class="empty-state">Loading…</p></div>
-        </section>
-        <section class="card health-card health-wide" aria-labelledby="healthWeatherHeading">
-          <div class="section-heading"><div><h2 id="healthWeatherHeading">Heat, cold and UV</h2><p>The week ahead.</p></div><span class="section-icon" data-icon="thermometer"></span></div>
-          <div id="healthWeather"><p class="empty-state">Loading…</p></div>
-        </section>
+
+        <aside class="card health-alerts-card" aria-labelledby="healthAlertsHeading">
+          <div class="health-alerts-head"><h2 id="healthAlertsHeading">Alerts</h2><span class="health-when">Today – next 2 days</span><span id="healthAlertCount" class="health-count">…</span></div>
+          <div id="healthAlerts" class="health-alerts" aria-live="polite"><p class="empty-state">Checking for alerts…</p></div>
+        </aside>
       </div>
       <footer class="footer"><p>Air quality by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a> (CAMS)<span class="footer-dot">·</span>Pollen by Pakistan Meteorological Department (<a href="https://weather.gov.pk/rnd/pollen-data" target="_blank" rel="noopener noreferrer">Islamabad</a>, <a href="https://ffd.pmd.gov.pk/pollen" target="_blank" rel="noopener noreferrer">Lahore</a>)<span class="footer-dot">·</span>Health guidance is general information, not medical advice.</p></footer>
     </section>
@@ -264,7 +262,7 @@
   <script src="app.js?v=20261028-41"></script>
   <script src="forecast.js?v=20261025-37"></script>
   <script src="radar.js?v=20261025-37"></script>
-  <script src="health.js?v=20261028-5"></script>
+  <script src="health.js?v=20261028-8"></script>
   <script src="views.js?v=20261028-11"></script>
   <script src="effects.js?v=glass-1"></script>
 </body>
