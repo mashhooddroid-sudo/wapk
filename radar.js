@@ -17,6 +17,8 @@
   const TIMELINE_PLAYBACK_MS = 850;
   const MAP_MARKER_LIMIT = 1_500;
   const PMD_RADAR_REFRESH_MS = 5 * 60 * 1000;
+  const FIRES_REFRESH_MS = 30 * 60 * 1000;
+  const FIRES_VISIBLE_KEY = "wapk.firesVisible";
   const STRIKES_VISIBLE_KEY = "wapk.lightningVisible";
   // A frame older than three update cycles (at least 30 minutes) means that radar is offline.
   const PMD_STALE_CYCLES = 3;
@@ -55,6 +57,8 @@
     radiusValue: document.getElementById("radarRadiusValue"),
     satelliteProduct: document.getElementById("radarSatelliteProduct"),
     satelliteToggle: document.getElementById("radarSatelliteToggle"),
+    firesToggle: document.getElementById("radarFiresToggle"),
+    firesNote: document.getElementById("radarFiresNote"),
     satelliteBar: document.getElementById("radarSatelliteBar"),
     satellitePlay: document.getElementById("radarSatellitePlay"),
     satelliteSlider: document.getElementById("radarSatelliteSlider"),
@@ -238,6 +242,7 @@
     if (Date.now() - state.satelliteFetchAt >= WEATHER_REFRESH_MS) fetchSatellite(true);
     if (Date.now() - state.pmdFetchAt >= PMD_RADAR_REFRESH_MS) fetchPmdRadar(true);
     else renderPmdRadar();
+    if (els.firesToggle.checked && Date.now() - (state.firesFetchAt || 0) >= FIRES_REFRESH_MS) fetchFires();
     scheduleAutoRefresh();
     scheduleWeatherRefresh();
     state.forecast?.resume();
@@ -335,6 +340,13 @@
     state.map.getPane("pmdRadar").style.zIndex = "350";
     state.map.getPane("pmdRadar").style.pointerEvents = "none";
     state.pmdLayer = L.layerGroup().addTo(state.map);
+    // Active fires (NASA FIRMS), drawn on one canvas for speed. It sits above Leaflet's overlay pane (400), whose
+    // full-map canvas would otherwise catch clicks meant for a fire; clicks between fires still reach the map.
+    state.map.createPane("fires").style.zIndex = "410";
+    state.fireRenderer = L.canvas({ pane: "fires", padding: 0.3 });
+    state.fireLayer = L.layerGroup();
+    els.firesToggle.checked = readFiresPreference();
+    if (els.firesToggle.checked) state.fireLayer.addTo(state.map);
     state.strikeLayer = L.layerGroup();
     setStrikesVisible(readStrikesPreference(), false);
     // Place names stay readable above the forecast colours and wind.
@@ -429,6 +441,18 @@
 
     els.mapTheme.addEventListener("change", () => {
       setTileLayer(els.mapTheme.value);
+    });
+
+    els.firesToggle.addEventListener("change", () => {
+      saveFiresPreference(els.firesToggle.checked);
+      if (els.firesToggle.checked) {
+        state.fireLayer.addTo(state.map);
+        if (!state.fires || Date.now() - (state.firesFetchAt || 0) >= FIRES_REFRESH_MS) fetchFires();
+        else renderFires();
+      } else {
+        state.map.removeLayer(state.fireLayer);
+        renderFiresNote();
+      }
     });
 
     els.satelliteToggle.addEventListener("change", () => {
@@ -844,6 +868,7 @@
     state.weatherRefreshTimer = window.setInterval(() => {
       fetchSatellite(true);
       fetchPmdRadar(true);
+      if (els.firesToggle.checked && Date.now() - (state.firesFetchAt || 0) >= FIRES_REFRESH_MS) fetchFires();
     }, WEATHER_REFRESH_MS);
   }
 
@@ -1082,6 +1107,108 @@
       localStorage.setItem(STRIKES_VISIBLE_KEY, visible ? "1" : "0");
     } catch {
       // The choice still applies for this visit when browser storage is unavailable.
+    }
+  }
+
+  // ── Active fires (NASA FIRMS via the PK worker) ──────────────────────────
+
+  async function fetchFires() {
+    state.firesFetchAt = Date.now();
+    els.firesNote.textContent = "Loading fires…";
+    try {
+      const response = await fetchWithTimeout(apiUrl("/api/fires"), 30_000);
+      if (!response.ok) throw new Error(`fires returned ${response.status}`);
+      const payload = await response.json();
+      if (!payload?.success || !Array.isArray(payload.fires)) throw new Error("fire data is unavailable");
+      state.fires = payload;
+      renderFires();
+    } catch (error) {
+      els.firesNote.textContent = "Fires unavailable";
+      state.firesFetchAt = 0;
+    }
+  }
+
+  // Each fire is a dot: size from its strength (fire radiative power), colour from how long ago it was seen,
+  // faint when the detection is low-confidence.
+  function renderFires() {
+    state.fireLayer.clearLayers();
+    if (!state.fires || !els.firesToggle.checked) { renderFiresNote(); return; }
+    const now = Date.now();
+    const satellites = state.fires.satellites || [];
+    state.fires.fires.forEach(([lat, lon, minutes, frp, confidence, satIndex, night]) => {
+      const at = minutes * 60000;
+      const hours = (now - at) / 3_600_000;
+      const colour = hours <= 6 ? "#ff3b1f" : hours <= 12 ? "#ff8a1f" : "#f2c14e";
+      const marker = L.circleMarker([lat, lon], {
+        renderer: state.fireRenderer,
+        radius: 2.5 + Math.min(6, Math.sqrt(frp || 0) / 1.6),
+        stroke: true,
+        color: "#3a0b00",
+        weight: 0.6,
+        fillColor: colour,
+        fillOpacity: confidence === 0 ? 0.45 : 0.9,
+        opacity: confidence === 0 ? 0.3 : 0.7,
+        bubblingMouseEvents: false,
+      });
+      marker.on("click", () => {
+        const content = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "popup-title";
+        title.textContent = "Active fire";
+        const meta = document.createElement("div");
+        meta.className = "popup-meta";
+        [
+          `Seen ${formatRadarTime(at)} (${formatAge(at)}), ${night ? "night" : "day"} pass`,
+          `Satellite: ${satellites[satIndex] || "—"}`,
+          `Strength: ${frp ? `${frp} MW` : "—"} fire radiative power`,
+          `Confidence: ${["low", "nominal", "high"][confidence] || "—"}`,
+          "Usually crop-residue burning, forest or brush fires, or industrial heat. Source: NASA FIRMS.",
+        ].forEach((line, index) => {
+          if (index) meta.append(document.createElement("br"));
+          meta.append(line);
+        });
+        content.append(title, meta);
+        L.popup({ maxWidth: 260 }).setLatLng([lat, lon]).setContent(content).openOn(state.map);
+      });
+      state.fireLayer.addLayer(marker);
+    });
+    renderFiresNote();
+  }
+
+  function renderFiresNote() {
+    if (!els.firesToggle.checked || !state.fires) { els.firesNote.hidden = !els.firesToggle.checked; return; }
+    els.firesNote.hidden = false;
+    const newest = state.fires.fires.reduce((latest, fire) => Math.max(latest, fire[2]), 0) * 60000;
+    els.firesNote.replaceChildren();
+    const count = document.createElement("strong");
+    count.textContent = state.fires.fires.length.toLocaleString();
+    els.firesNote.append(count, " in 24 h");
+    const key = document.createElement("span");
+    key.className = "fire-key";
+    [["#ff3b1f", "< 6 h"], ["#ff8a1f", "6–12 h"], ["#f2c14e", "12–24 h"]].forEach(([colour, label]) => {
+      const item = document.createElement("span");
+      const dot = document.createElement("i");
+      dot.style.background = colour;
+      item.append(dot, label);
+      key.append(item);
+    });
+    els.firesNote.append(key);
+    if (newest) els.firesNote.title = `Newest detection ${formatAge(newest)}. Satellites pass about twice a day; NASA publishes within ~3 hours.`;
+  }
+
+  function readFiresPreference() {
+    try {
+      return localStorage.getItem(FIRES_VISIBLE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveFiresPreference(visible) {
+    try {
+      localStorage.setItem(FIRES_VISIBLE_KEY, visible ? "1" : "0");
+    } catch {
+      // The choice still applies for this visit.
     }
   }
 

@@ -75,6 +75,13 @@
 .rail-check input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .rail-check:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 .rail-check:has(input:disabled) { opacity: .5; pointer-events: none; }
+/* Fire count and age key under the Fires toggle */
+.rail-note { margin: 0 0 4px; padding: 5px 9px 6px; border-radius: 9px; background: var(--glass-bright); font-size: 10.5px; color: var(--muted); line-height: 1.35; }
+.rail-note[hidden] { display: none !important; }
+.rail-note strong { color: var(--ink); }
+.fire-key { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 3px; }
+.fire-key span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fire-key i { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px #3a0b0066; }
 .rail-select select { min-height: 30px; padding: 4px 6px; border-radius: 8px; font-size: 11.5px; }
 /* Type dropdown under the active category, like Windy's sub-menu. */
 .rail-type { margin: 0 0 4px; }
@@ -290,4 +297,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .strike-ring { animation: none !important; transform: translate(-50%, -50%) !important; }
+}
+
+@media (max-width: 760px) {
+  .rail-note { flex: none; align-self: center; margin: 0; max-width: 150px; }
 }

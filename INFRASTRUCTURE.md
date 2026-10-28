@@ -1,7 +1,7 @@
 # WAPK — Weather Alert PK: Complete Infrastructure Guide
 
 > Everything about how WAPK works: what runs where, where every piece of data comes from, how to deploy, how to fix things.
-> Written 25 October 2026, updated 28 October 2026 (Health section, Lahore pollen, seasonal diseases). If something changes, update this file.
+> Written 25 October 2026, updated 28 October 2026 (Health section, Lahore pollen, seasonal diseases, fire layer). If something changes, update this file.
 
 ---
 
@@ -16,6 +16,7 @@
 7. [The map data file format](#7-the-map-data-file-format)
 8. [The backend worker (lightning-weatherx-pk-api)](#8-the-backend-worker-lightning-weatherx-pk-api)
 9. [Satellite images](#9-satellite-images)
+9b. [Active fires (NASA FIRMS)](#9b-active-fires-nasa-firms)
 10. [PMD radar](#10-pmd-radar)
 11. [Lightning strikes](#11-lightning-strikes)
 12. [METAR (live airport weather)](#12-metar-live-airport-weather)
@@ -54,7 +55,8 @@ other places: some are free public services, some are **your own** Cloudflare se
                                        │                    ▲   ▲   ▲
                               GitHub Actions             cron every 5 min
                               every 3 hours              │   │   ├── PMD radar manifest (ffd.pmd.gov.pk)
-                                                         │   │   └── PMD pollen page (weather.gov.pk), every 3 h
+                                                         │   │   ├── PMD pollen pages (weather.gov.pk, ffd.pmd.gov.pk), every 3 h
+                                                         │   │   └── NASA FIRMS active fires, every 30 min
                               (Python pipeline)          │   └────── EUMETSAT satellite (view.eumetsat.int)
                                        ▲                 └────────── Lightning feed (lightning-alerts worker)
                                        │
@@ -69,8 +71,8 @@ other places: some are free public services, some are **your own** Cloudflare se
 | Website | The pages people see | Cloudflare Pages project `wapk` → https://wapk.pages.dev |
 | Forecast map data | ECMWF model turned into small files | Cloudflare Pages project `wapk-forecast` → https://wapk-forecast.pages.dev |
 | Map data builder | Python script that makes the files above | GitHub repo `mashhooddroid-sudo/wapk`, runs on GitHub Actions |
-| Backend worker | Lightning, satellite, radar list, PMD pollen | Cloudflare Worker `lightning-weatherx-pk-api` |
-| Database | Strikes, satellite images, pollen reports | Cloudflare D1 `lightning-pk-strikes` |
+| Backend worker | Lightning, satellite, radar list, PMD pollen, fires | Cloudflare Worker `lightning-weatherx-pk-api` |
+| Database | Strikes, satellite images, pollen reports, fire snapshot | Cloudflare D1 `lightning-pk-strikes` |
 | METAR API | Live airport weather | Your separate worker `travel-weather-api.mashhood2717.workers.dev` |
 
 ---
@@ -178,6 +180,7 @@ Make a new one the same way and paste it into the secret.
 | "Current location" name | BigDataCloud reverse geocoding (free client endpoint) | Direct | — |
 | **Forecast map layers** | **ECMWF IFS open data, raw GRIB2 files** — *not* Open-Meteo | Your pipeline → `wapk-forecast.pages.dev` | New run twice a day (00Z, 12Z) |
 | Satellite | EUMETSAT Meteosat (Indian Ocean service, satellite at 45.5°E) | Your worker stores images in D1 | New image every 15 min, usually 30–50 min old |
+| **Fires** | **NASA FIRMS** active fires — VIIRS (Suomi-NPP, NOAA-20, NOAA-21) and MODIS, public "South Asia 24h" CSV files (no key) | Worker merges them every 30 min, serves `/api/fires` | Satellites pass ~1–2 AM and ~1–2 PM PKT; NASA publishes within ~3 h |
 | PMD radar | PMD Flood Forecasting Division (ffd.pmd.gov.pk) | Worker proxies the list; images load straight from PMD | 10 min (sri, cappi01), hourly (rain12) |
 | Lightning | Your lightning-alerts worker `/buffer` | Your PK worker stores in D1 | Every 5 min |
 | **Pollen** (Health) | **PMD** — Islamabad: https://weather.gov.pk/rnd/pollen-data · Lahore: https://ffd.pmd.gov.pk/pollen | Worker reads both pages every 3 h, stores one report per station and PMD date, serves `/api/pollen` | Islamabad daily; Lahore daily during the pollen season |
@@ -381,6 +384,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `GET /api/search` | Place search | Lightning Weather X |
 | `GET /api/weather-layers` | Old EUMETSAT layer list | **Lightning Weather X — keep it** |
 | `GET /api/pmd-radar` | PMD radar list (manifest), cached 2 min | WAPK Maps |
+| `GET /api/fires` | Fires of the last 24 h in the map area: compact rows `[lat, lon, minutesSinceEpoch, frpMW, confidence 0/1/2, satelliteIndex, night]` (cached 10 min) | WAPK Maps |
 | `GET /api/pollen` | `stations[]` (Islamabad, Lahore): latest report + up to 30 days of history each (cached 15 min). Top-level `latest`/`station`/`history` repeat Islamabad for older pages. | WAPK Health |
 | `GET /api/satellite` | Satellite products, their stored times (`frames`) and image addresses | WAPK Maps |
 | `GET /api/satellite/<product>?t=<time>` | One stored satellite image (cached 1 day in browsers) | WAPK Maps |
@@ -390,6 +394,8 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 1. **Lightning:** fetch the lightning-alerts `/buffer`, keep strikes inside Pakistan from the last 24 h, store in D1.
 2. **Satellite:** fetch up to **6** images (3 at a time) from EUMETSAT: newest first, then fill missing hourly images
    of the past 24 h; delete images older than 24 h.
+4. **Fires:** if the snapshot is more than **30 minutes** old, download the 4 FIRMS files, keep fires inside the map area
+   from the last 24 h, and replace the snapshot.
 3. **Pollen:** for each station (Islamabad, Lahore) whose last read is more than **3 hours** old, read its PMD page,
    store/replace that PMD date's report, delete reports older than **120 days**. One station failing doesn't stop the other.
 
@@ -400,6 +406,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `strikes` | One row per strike (id, lat, lon, timestamp, raw JSON) |
 | `ingest_runs` | A log of each strike refresh |
 | `satellite_frames` | Satellite images: product, time, image bytes (key = product + time) |
+| `fire_snapshot` | One row (`id = 'latest'`): `fetched_at` + JSON of all fires (≈ 160 KB) |
 | `pollen_daily` | One PMD pollen report per station and date: `station`, `report_date` (key together), `label`, `fetched_at`, `data` (JSON: sites, types, notes, thresholds) |
 | `pollen_reports` | **Old, unused** (first Islamabad-only version, 1 row). Safe to delete. |
 | `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
@@ -434,6 +441,32 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 
 **Satellite bar** (top of the map when Satellite is on): drag to any stored time; **Play** steps through the past day hour
 by hour (waiting for each image to load), holds on the newest, then loops.
+
+---
+
+## 9b. Active fires (NASA FIRMS)
+
+- **What:** hotspots detected by satellites' heat sensors — in Pakistan mostly **crop-residue burning** (Oct–Nov and
+  Apr–May, the main cause of Punjab smog), plus forest/brush fires and industrial heat (e.g. gas flares).
+- **Source:** NASA FIRMS public files (no account key needed):
+  - `suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_South_Asia_24h.csv` (VIIRS S-NPP, 375 m)
+  - `noaa-20-viirs-c2/csv/J1_VIIRS_C2_South_Asia_24h.csv` (VIIRS NOAA-20)
+  - `noaa-21-viirs-c2/csv/J2_VIIRS_C2_South_Asia_24h.csv` (VIIRS NOAA-21)
+  - `modis-c6.1/csv/MODIS_C6_1_South_Asia_24h.csv` (MODIS Terra/Aqua, 1 km)
+  all under `https://firms.modaps.eosdis.nasa.gov/data/active_fire/`.
+- **Coverage:** FIRMS "South Asia" region ≈ **54–102°E, 6–40°N** (Pakistan, India, Afghanistan, eastern Iran, Nepal,
+  Bangladesh…). The western and northern parts of the map (Arabia, Turkey, Central Asia) have no fire data.
+- **Freshness:** each satellite passes about twice a day (≈ 1–2 AM and 1–2 PM PKT); NASA publishes within ~3 hours.
+  So the newest fire is usually 3–12 hours old.
+- **On the map:** **Fires** button in the rail (off by default; remembered in `wapk.firesVisible`). Each fire is a dot:
+  size = fire radiative power (strength, MW), colour = age (red < 6 h, orange 6–12 h, yellow 12–24 h), faint = low
+  confidence. Under the button: count + colour key. Click a fire: time seen, day/night pass, satellite, strength,
+  confidence. Typical: ~4,000–4,500 fires in the area in 24 h in late October, ~2,400 in Pakistan.
+- **Layering:** fires have their own canvas pane at z-index **410** — above Leaflet's overlay pane (400), whose full-map
+  canvas would otherwise swallow fire clicks. Clicks between fires still open the forecast popup.
+- **Not part of the forecast/satellite switching rule:** fires are dots, like lightning, and stay on with any layer.
+- **More history or a key:** FIRMS also has 48h and 7d files (same paths, `_48h` / `_7d`). A free FIRMS MAP_KEY would
+  allow the area API and WMS, but isn't needed now.
 
 ---
 
@@ -761,6 +794,7 @@ markers.
 | Map data check/build | Every 3 hours at :25 UTC | GitHub Actions |
 | Lightning + satellite fetch | Every 5 minutes | Cloudflare Worker cron |
 | PMD pollen pages read (Islamabad, Lahore) | Every 3 hours each (first cron run after 3 h) | Cloudflare Worker cron |
+| NASA FIRMS fire files | Every 30 minutes | Cloudflare Worker cron |
 | PMD radar list cache | 2 minutes in the worker; browser refreshes every 5 min | Worker / browser |
 | Satellite list refresh in browser | Every 5 minutes | Browser |
 | Lightning auto-refresh in browser | Every 15 minutes (if on) | Browser |
@@ -782,6 +816,7 @@ markers.
 | EUMETSAT View | Free | ≈ 32–72 image requests/hour |
 | Open-Meteo | Free for **non-commercial** use (10,000 calls/day) | 2 calls per page load + air quality + search; Health adds 2 (weather + air quality) |
 | PMD website | Public page | One read every 3 hours by the worker |
+| NASA FIRMS | Public files, free | 4 files (≈ 400 KB) every 30 min |
 | PMD | Permission given | Direct image loads |
 
 **Watch out:** if WAPK becomes commercial, Open-Meteo needs a paid plan (or move the forecast pages to your own ECMWF data).
@@ -875,6 +910,9 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite 
 
 **See if pollen is current**
 Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen → `latest.date` and `latest.label`.
+
+**See if fires are current**
+Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → `fetchedAt`, `count`.
 
 **See worker logs live**
 `npx wrangler tail lightning-weatherx-pk-api` (inside `D:\Lightning Weather x`).
