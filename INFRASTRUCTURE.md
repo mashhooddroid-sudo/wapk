@@ -989,6 +989,8 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 
 ## 21. Open items
 
+(Run the `wrangler` commands below inside `D:\Test Weather webapp\worker`.)
+
 - **Old D1 table `satellite_images`** (≈ 3 MB) is unused and can be dropped:
   `npx wrangler d1 execute lightning-pk-strikes --remote --command "DROP TABLE IF EXISTS satellite_images"`
 - **Old D1 table `pollen_reports`** (1 row) is unused since Lahore was added:
