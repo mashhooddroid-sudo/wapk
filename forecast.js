@@ -68,6 +68,7 @@
       label: "Precipitation type", type: "Precipitation type", field: "ptype",
       note: "Precipitation type shows what is falling where the model has precipitation at that moment.",
       categories: [[1, "Rain", "#3b8bff"], [2, "Rain and snow", "#a57cf0"], [3, "Snow", "#e9f2ff"], [4, "Freezing rain or ice", "#ff5fa2"]],
+      symbols: { 1: [63], 2: [66], 3: [73], 4: [67] },
     }),
     snowacc: {
       label: "New snow", type: "New snow", unit: "cm since the run started", field: "snowacc", transparentBelow: 0.5,
@@ -84,6 +85,7 @@
       label: "Thunderstorms", type: "Thunderstorms", field: "storm",
       note: "Thunderstorms show only where the model has rain and enough instability (CAPE), using the WAPK app's rules; hail where the freezing level is low, it is cold aloft and winds aloft are strong.",
       categories: [[1, "Isolated", "#f6d04d"], [2, "Scattered", "#f39a2d"], [3, "Thunderstorms", "#e4402d"], [4, "Heavy", "#b0186b"], [5, "With hail", "#4ee6ff"]],
+      symbols: { 1: [95], 2: [96], 3: [97], 4: [99], 5: [97, true] },
     }),
     cape: {
       label: "Thunderstorm potential", type: "Thunderstorm potential (CAPE)", unit: "CAPE, J/kg", field: "cape", transparentBelow: 100,
@@ -173,8 +175,12 @@
     map.createPane("forecastWind").style.zIndex = "380";
     map.getPane("forecastColor").style.pointerEvents = "none";
     map.getPane("forecastWind").style.pointerEvents = "none";
+    // Weather symbols over category layers (storms, precipitation type), like Windy; below place names (390).
+    map.createPane("forecastSymbols").style.zIndex = "387";
+    map.getPane("forecastSymbols").style.pointerEvents = "none";
 
     const particles = createParticleLayer({ pane: "forecastWind", attribution: ATTRIBUTION });
+    const symbols = createSymbolLayer({ pane: "forecastSymbols" });
     // The colour field is drawn into one canvas placed on the map like an image, so changing the hour
     // repaints pixels instead of encoding a new picture and swapping map layers.
     const colorCanvas = document.createElement("canvas");
@@ -502,6 +508,7 @@
 
       if (layer) {
         const bounds = drawColorField(colorCanvas, state.meta, data, state.layer, level, state.theme);
+        softenCategories();
         if (!state.colorOverlay) {
           state.colorOverlay = new CanvasOverlay(colorCanvas, bounds, {
             pane: "forecastColor",
@@ -514,9 +521,19 @@
           state.colorOverlay.setBounds(L.latLngBounds(bounds));
           state.colorOverlay.setOpacity(layer.opacity || 0.6);
         }
+        softenCategories();
       } else if (state.colorOverlay) {
         map.removeLayer(state.colorOverlay);
         state.colorOverlay = null;
+      }
+
+      if (layer?.symbols) {
+        const pair = data[layer.field];
+        symbols.setSource(layer.symbols, (lats, lons) => applyPlan(planFor(state.meta.grid, lats, lons), pair, undefined, true));
+        if (!map.hasLayer(symbols)) symbols.addTo(map);
+        else symbols.redraw();
+      } else if (map.hasLayer(symbols)) {
+        map.removeLayer(symbols);
       }
 
       if (showWind) {
@@ -543,6 +560,20 @@
       prefetch(fields);
     }
 
+    // Category layers (storms, precipitation type) are blurred by about one and a half grid cells on screen,
+    // so their areas look rounded rather than built from model grid squares. The canvas is stretched with
+    // the zoom, so the blur is set from its on-screen size.
+    function softenCategories() {
+      const layer = LAYERS[state.layer];
+      if (!state.colorOverlay || !layer?.nearest) {
+        colorCanvas.style.filter = "";
+        return;
+      }
+      const cellPixels = (parseFloat(colorCanvas.style.width) || colorCanvas.width) / state.meta.grid.nx;
+      colorCanvas.style.filter = `blur(${Math.min(14, Math.max(1, cellPixels * 0.6)).toFixed(1)}px)`;
+    }
+    map.on("zoomend", softenCategories);
+
     function clearDrawing() {
       state.renderId += 1;
       if (state.colorOverlay) {
@@ -550,6 +581,7 @@
         state.colorOverlay = null;
       }
       if (map.hasLayer(particles)) map.removeLayer(particles);
+      if (map.hasLayer(symbols)) map.removeLayer(symbols);
     }
 
     function renderLegend() {
@@ -798,6 +830,43 @@
     return plan;
   }
 
+  // Categories from the nearest grid cell and step; where that cell has none but a neighbour does, the
+  // neighbour's (highest) category, so the soft edge drawn from presencePair has a colour.
+  function applyCategoryPlan(plan, pair, out = new Float32Array(plan.count)) {
+    if (!pair) return out.fill(NaN);
+    const { a, b, weight } = pair;
+    const source = b && weight >= 0.5 ? b : a;
+    for (let index = 0; index < plan.count; index += 1) {
+      const base = plan.base[index];
+      if (base < 0) {
+        out[index] = NaN;
+        continue;
+      }
+      const dx = plan.dx[index];
+      const dy = plan.dy[index];
+      let value = source[base + (plan.tx[index] >= 0.5 ? dx : 0) + (plan.ty[index] >= 0.5 ? dy : 0)];
+      if (!(value >= 0.5)) value = Math.max(source[base] || 0, source[base + dx] || 0, source[base + dy] || 0, source[base + dy + dx] || 0);
+      out[index] = value;
+    }
+    return out;
+  }
+
+  // 1 where a category is present, 0 elsewhere; blending it gives smooth area outlines.
+  const presenceArrays = new WeakMap();
+  function presenceOf(values) {
+    if (!values) return values;
+    let presence = presenceArrays.get(values);
+    if (!presence) {
+      presence = new Float32Array(values.length);
+      for (let index = 0; index < values.length; index += 1) presence[index] = values[index] >= 0.5 ? 1 : 0;
+      presenceArrays.set(values, presence);
+    }
+    return presence;
+  }
+  function presencePair(pair) {
+    return pair && { a: presenceOf(pair.a), b: presenceOf(pair.b), weight: pair.weight };
+  }
+
   // Values of one field for every point in the plan, blended between the two steps around the current hour.
   // With `nearest`, categories are taken from the closest grid cell and model step instead of blended.
   function applyPlan(plan, pair, out = new Float32Array(plan.count), nearest = false) {
@@ -881,13 +950,15 @@
       canvas.height = height;
     }
     let values;
+    let mask = null;
     if (!layer.field) {
       const u = applyPlan(plan, data[`u${level}`]);
       const v = applyPlan(plan, data[`v${level}`]);
       values = u;
       for (let index = 0; index < values.length; index += 1) values[index] = Math.hypot(u[index], v[index]) * 3.6;
     } else {
-      values = applyPlan(plan, data[layerField(layer, level)], undefined, layer.nearest);
+      values = layer.nearest ? applyCategoryPlan(plan, data[layerField(layer, level)]) : applyPlan(plan, data[layerField(layer, level)]);
+      if (layer.nearest) mask = applyPlan(plan, presencePair(data[layerField(layer, level)]));
       if (layer.convert) for (let index = 0; index < values.length; index += 1) values[index] = layer.convert(values[index]);
     }
 
@@ -903,7 +974,9 @@
       pixels[pixel] = colours.table[entry];
       pixels[pixel + 1] = colours.table[entry + 1];
       pixels[pixel + 2] = colours.table[entry + 2];
-      pixels[pixel + 3] = colours.table[entry + 3] * edge[index];
+      // Category areas get soft, rounded edges from the blended presence instead of square grid cells.
+      const soft = mask ? Math.min(1, Math.max(0, (mask[index] - 0.25) / 0.3)) : 1;
+      pixels[pixel + 3] = colours.table[entry + 3] * edge[index] * soft;
     }
     if (layer.isobars) drawIsobars(image, values, width, height, theme);
     context.putImageData(image, 0, 0);
@@ -988,6 +1061,112 @@
   // ── Animated wind particles ────────────────────────────────────────────────
 
   // Leaflet loads only when Maps first opens, so the layer class is built on first use.
+  // Weather symbols spread over a category layer on a screen grid, redrawn after every pan, zoom or hour.
+  const SYMBOL_SPACING = 58;
+  const SYMBOL_SIZE = 32;
+  const symbolImages = new Map();
+  let SymbolLayerClass = null;
+
+  function createSymbolLayer(options) {
+    SymbolLayerClass ||= L.Layer.extend({
+      initialize(layerOptions) {
+        L.setOptions(this, layerOptions);
+        this._symbols = null;
+        this._sample = null;
+      },
+
+      onAdd(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create("canvas", "forecast-symbols");
+        this.getPane().appendChild(this._canvas);
+        map.on("moveend resize", this.redraw, this);
+        map.on("movestart", this._clear, this);
+        this.redraw();
+      },
+
+      onRemove(map) {
+        map.off("moveend resize", this.redraw, this);
+        map.off("movestart", this._clear, this);
+        this._canvas.remove();
+        this._canvas = null;
+      },
+
+      // `symbols` maps a category to [weather code, hail]; `sample(lats, lons)` returns the categories.
+      setSource(symbolMap, sample) {
+        this._symbols = symbolMap;
+        this._sample = sample;
+      },
+
+      _clear() {
+        this._canvas?.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
+      },
+
+      _image(category) {
+        const [code, hail] = this._symbols[category] || [];
+        if (code === undefined || !window.AtmosIcons) return null;
+        const key = `${code}:${hail ? 1 : 0}`;
+        let image = symbolImages.get(key);
+        if (!image) {
+          image = new Image();
+          image.onload = () => this.redraw();
+          image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(window.AtmosIcons.weather(code, true, Boolean(hail)))}`;
+          symbolImages.set(key, image);
+        }
+        return image.complete && image.naturalWidth ? image : null;
+      },
+
+      redraw() {
+        if (!this._map || !this._canvas || !this._sample) return;
+        const map = this._map;
+        const size = map.getSize();
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        this._canvas.width = Math.round(size.x * ratio);
+        this._canvas.height = Math.round(size.y * ratio);
+        this._canvas.style.width = `${size.x}px`;
+        this._canvas.style.height = `${size.y}px`;
+        L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0, 0]));
+        const context = this._canvas.getContext("2d");
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+        // Rows are staggered so the symbols don't line up in columns. Grid positions follow the map, so
+        // symbols stay put on the ground while panning instead of sliding with the screen.
+        const origin = map.getPixelOrigin().add(map.containerPointToLayerPoint([0, 0]));
+        const points = [];
+        const firstRow = Math.floor(origin.y / SYMBOL_SPACING);
+        for (let row = firstRow; row * SYMBOL_SPACING - origin.y < size.y + SYMBOL_SPACING; row += 1) {
+          const shift = (row & 1) * (SYMBOL_SPACING / 2);
+          const firstCol = Math.floor((origin.x - shift) / SYMBOL_SPACING);
+          for (let col = firstCol; col * SYMBOL_SPACING + shift - origin.x < size.x + SYMBOL_SPACING; col += 1) {
+            points.push([col * SYMBOL_SPACING + shift - origin.x, row * SYMBOL_SPACING - origin.y]);
+          }
+        }
+        const lats = new Float64Array(points.length);
+        const lons = new Float64Array(points.length);
+        points.forEach(([x, y], index) => {
+          const point = map.containerPointToLatLng([x, y]);
+          lats[index] = point.lat;
+          lons[index] = point.lng;
+        });
+        const categories = this._sample(lats, lons);
+        points.forEach(([x, y], index) => {
+          const category = Math.round(categories[index]);
+          if (!(category >= 1)) return;
+          const image = this._image(category);
+          if (!image) return;
+          // A faint dark disc keeps white clouds and snowflakes readable on light colours such as snow.
+          context.shadowBlur = 0;
+          context.fillStyle = "rgba(8, 22, 44, 0.42)";
+          context.beginPath();
+          context.arc(x, y + 1, SYMBOL_SIZE * 0.5, 0, Math.PI * 2);
+          context.fill();
+          context.shadowColor = "rgba(0, 10, 30, 0.5)";
+          context.shadowBlur = 3;
+          context.drawImage(image, x - SYMBOL_SIZE / 2, y - SYMBOL_SIZE / 2, SYMBOL_SIZE, SYMBOL_SIZE);
+        });
+      },
+    });
+    return new SymbolLayerClass(options);
+  }
+
   let ParticleLayerClass = null;
 
   function createParticleLayer(options) {
