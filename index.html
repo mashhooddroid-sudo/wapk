@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20261025-40">
+  <link rel="stylesheet" href="styles.css?v=20261028-41">
   <link rel="stylesheet" href="radar.css?v=20261025-37">
 </head>
 <body>
@@ -33,6 +33,7 @@
       <a class="nav-link" href="#hourlySection"><span data-icon="clock"></span>Hourly forecast</a>
       <a class="nav-link" href="#weekSection"><span data-icon="calendar"></span>This week</a>
       <a class="nav-link" href="#mapsView"><span data-icon="map"></span>Maps<span class="nav-indicator"></span></a>
+      <a class="nav-link" href="#healthView"><span data-icon="heart"></span>Health<span class="nav-indicator"></span></a>
     </nav>
     <div class="saved-heading"><h2>Saved places</h2><span data-icon="bookmark"></span></div>
     <div id="savedCities" class="saved-cities"></div>
@@ -60,7 +61,7 @@
         <div id="unitControls" class="unit-controls" role="group" aria-label="Temperature units"><button type="button" data-unit="C" aria-pressed="true">°C</button><button type="button" data-unit="F" aria-pressed="false">°F</button></div>
         <button id="themeButton" class="icon-button theme-button" type="button" aria-label="Switch to light theme" title="Change theme"><span id="themeIcon" data-icon="sun"></span></button>
       </div>
-      <nav class="mobile-nav" aria-label="Weather sections"><a href="#overview">Overview</a><a href="#hourlySection">Hourly</a><a href="#weekSection">This week</a><a href="#mapsView">Maps</a><a href="#savedPlaces">Saved places</a></nav>
+      <nav class="mobile-nav" aria-label="Weather sections"><a href="#overview">Overview</a><a href="#hourlySection">Hourly</a><a href="#weekSection">This week</a><a href="#mapsView">Maps</a><a href="#healthView">Health</a><a href="#savedPlaces">Saved places</a></nav>
     </header>
 
     <main id="overview" class="main-content">
@@ -116,6 +117,37 @@
       </div>
       <footer class="footer"><p><span class="status-dot"></span><span id="lastUpdated">Connecting to forecast data</span><button id="refreshButton" type="button" aria-label="Refresh weather" title="Refresh weather"><span data-icon="refresh"></span></button></p><p>Forecasts by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a><span class="footer-dot">·</span>Air quality by CAMS<span class="footer-dot">·</span>Airport METAR via Travel Weather API<span class="footer-dot">·</span>Made with a little sunshine.</p></footer>
     </main>
+    <section id="healthView" class="main-content health-view" role="main" aria-labelledby="healthHeading" aria-busy="false" hidden>
+      <div class="page-heading">
+        <div><p class="eyebrow">HEALTH &amp; SAFETY</p><h1 id="healthHeading" tabindex="-1">Health<span id="healthPlace" class="radar-country">Your location</span></h1><p class="radar-intro">Air quality, pollen, dengue conditions and weather health alerts.</p></div>
+        <button id="healthRefresh" class="save-button" type="button"><span data-icon="refresh"></span><span id="healthUpdated">Refresh</span></button>
+      </div>
+
+      <section class="card health-card health-alerts-card" aria-labelledby="healthAlertsHeading">
+        <div class="section-heading"><div><h2 id="healthAlertsHeading">Health alerts</h2><p>Today and the next two days.</p></div><span id="healthAlertCount" class="health-count">Loading</span></div>
+        <div id="healthAlerts" class="health-alerts" aria-live="polite"><p class="empty-state">Checking for alerts…</p></div>
+      </section>
+
+      <div class="health-grid">
+        <section class="card health-card" aria-labelledby="healthAirHeading">
+          <div class="section-heading"><div><h2 id="healthAirHeading">Air quality</h2><p>US AQI and pollutants, with a four-day outlook.</p></div><span class="section-icon" data-icon="leaf"></span></div>
+          <div id="healthAir"><p class="empty-state">Loading air quality…</p></div>
+        </section>
+        <section class="card health-card" aria-labelledby="healthPollenHeading">
+          <div class="section-heading"><div><h2 id="healthPollenHeading">Pollen allergy</h2><p>PMD's daily pollen count, Islamabad.</p></div><span class="section-icon" data-icon="flower"></span></div>
+          <div id="healthPollen"><p class="empty-state">Loading pollen count…</p></div>
+        </section>
+        <section class="card health-card" aria-labelledby="healthDengueHeading">
+          <div class="section-heading"><div><h2 id="healthDengueHeading">Dengue mosquito risk</h2><p>How favourable the weather is for Aedes mosquitoes.</p></div><span class="section-icon" data-icon="mosquito"></span></div>
+          <div id="healthDengue"><p class="empty-state">Loading…</p></div>
+        </section>
+        <section class="card health-card" aria-labelledby="healthWeatherHeading">
+          <div class="section-heading"><div><h2 id="healthWeatherHeading">Heat, cold and UV</h2><p>The week ahead.</p></div><span class="section-icon" data-icon="thermometer"></span></div>
+          <div id="healthWeather"><p class="empty-state">Loading…</p></div>
+        </section>
+      </div>
+      <footer class="footer"><p>Air quality by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a> (CAMS)<span class="footer-dot">·</span>Pollen by <a href="https://weather.gov.pk/rnd/pollen-data" target="_blank" rel="noopener noreferrer">Pakistan Meteorological Department</a><span class="footer-dot">·</span>Health guidance is general information, not medical advice.</p></footer>
+    </section>
     <section id="mapsView" class="main-content radar-view" role="main" aria-labelledby="mapsHeading" hidden>
       <div class="page-heading radar-page-heading">
         <div><p class="eyebrow">WEATHER IN MOTION</p><h1 id="mapsHeading" tabindex="-1">Weather map<span class="radar-country">Pakistan &amp; region</span></h1><p class="radar-intro">ECMWF forecast, PMD radar and live lightning.</p></div>
@@ -227,12 +259,13 @@
     </section>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="icons.js?v=20261025-40"></script>
+  <script src="icons.js?v=20261028-41"></script>
   <script src="weather-logic.js?v=20261025-1"></script>
-  <script src="app.js?v=20261025-40"></script>
+  <script src="app.js?v=20261028-41"></script>
   <script src="forecast.js?v=20261025-37"></script>
   <script src="radar.js?v=20261025-37"></script>
-  <script src="views.js?v=20261025-10"></script>
+  <script src="health.js?v=20261028-3"></script>
+  <script src="views.js?v=20261028-11"></script>
   <script src="effects.js?v=glass-1"></script>
 </body>
 </html>

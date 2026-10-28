@@ -1,16 +1,19 @@
 (() => {
   'use strict';
 
-  // Switches between the weather overview and the lightning map using the URL hash.
+  // Switches between the weather overview, the map and the health section using the URL hash.
   const byId = (id) => document.getElementById(id);
   const overview = byId('overview');
   const maps = byId('mapsView');
+  const health = byId('healthView');
+  const HEALTH_HASH = 'healthView';
   const stage = byId('radarMapStage');
   const fullscreenButton = byId('radarFullscreenButton');
   const viewStatus = byId('radarViewStatus');
   const MAPS_HASH = 'mapsView';
   const baseTitle = document.title;
   let mapsVisible = false;
+  let healthVisible = false;
 
   const radar = () => window.AtmosRadar;
   const currentPlace = () => window.Atmos?.place;
@@ -22,15 +25,16 @@
   }
 
   function markNavigation(hash) {
-    const target = hash === MAPS_HASH ? MAPS_HASH : hash || 'overview';
+    const view = hash === MAPS_HASH || hash === HEALTH_HASH ? hash : null;
+    const target = view || hash || 'overview';
     document.querySelectorAll('.nav-link[href^="#"]').forEach((link) => {
       const linkTarget = link.getAttribute('href').slice(1);
-      const active = target === MAPS_HASH ? linkTarget === MAPS_HASH : linkTarget === target || (linkTarget === 'overview' && !['hourlySection', 'weekSection'].includes(target));
+      const active = view ? linkTarget === view : linkTarget === target || (linkTarget === 'overview' && !['hourlySection', 'weekSection'].includes(target));
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
     document.querySelectorAll('.mobile-nav a').forEach((link) => {
-      const active = link.getAttribute('href').slice(1) === (target === MAPS_HASH ? MAPS_HASH : 'overview');
+      const active = link.getAttribute('href').slice(1) === (view || 'overview');
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
   }
@@ -38,6 +42,7 @@
   function showMaps() {
     const wasVisible = mapsVisible;
     mapsVisible = true;
+    hideHealth();
     overview.hidden = true;
     maps.hidden = false;
     document.body.classList.add('view-maps');
@@ -52,8 +57,9 @@
   }
 
   function showOverview(hash) {
-    const wasMaps = mapsVisible;
+    const wasMaps = mapsVisible || healthVisible;
     mapsVisible = false;
+    hideHealth();
     exitFullscreen();
     radar()?.hide();
     maps.hidden = true;
@@ -67,9 +73,34 @@
     else window.scrollTo({ top: 0, behavior: 'auto' });
   }
 
+  function showHealth() {
+    const wasVisible = healthVisible;
+    healthVisible = true;
+    mapsVisible = false;
+    exitFullscreen();
+    radar()?.hide();
+    maps.hidden = true;
+    overview.hidden = true;
+    health.hidden = false;
+    document.body.classList.remove('view-maps');
+    document.title = `Health — ${baseTitle}`;
+    if (!wasVisible) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      byId('healthHeading')?.focus({ preventScroll: true });
+    }
+    window.WapkHealth?.show();
+  }
+
+  function hideHealth() {
+    if (!healthVisible) return;
+    healthVisible = false;
+    health.hidden = true;
+    window.WapkHealth?.hide();
+  }
+
   function route() {
     const hash = decodeURIComponent(window.location.hash.slice(1));
-    if (hash === MAPS_HASH) showMaps(); else showOverview(hash);
+    if (hash === MAPS_HASH) showMaps(); else if (hash === HEALTH_HASH) showHealth(); else showOverview(hash);
     markNavigation(hash);
   }
 

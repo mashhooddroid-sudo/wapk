@@ -266,6 +266,7 @@
       state.weather = payload; state.fetchedAt = new Date();
       state.weather.wapk = window.WapkWeatherLogic?.classifyForecast(payload, currentHourIndex()) || null;
       savePreferences(); renderWeather();
+      document.dispatchEvent(new CustomEvent('atmos:weather'));
       loadAirQuality(selected, requestId);
     } catch (error) {
       if (requestId !== state.forecastId) return;
@@ -949,7 +950,18 @@
   }));
   window.addEventListener('offline', () => showToast('You are offline. Reconnect to load fresh weather.'));
   // Read-only view of the dashboard for views.js and the map; changes are announced via atmos:place, atmos:theme and atmos:unit.
-  window.Atmos = Object.freeze({ get place() { return { ...state.place }; }, get theme() { return state.theme; }, get unit() { return state.unit; } });
+  window.Atmos = Object.freeze({
+    get place() { return { ...state.place }; }, get theme() { return state.theme; }, get unit() { return state.unit; },
+    // Each forecast day's classified weather (storm tier, hail, storm strength), for the Health section.
+    get forecastDays() {
+      if (!state.weather?.daily?.time) return [];
+      return state.weather.daily.time.map((date, index) => {
+        const info = dayInfo(index);
+        const code = dayCode(index);
+        return { date, code, condition: condition(code), hail: Boolean(info?.hail), intensity: info?.intensity || null };
+      });
+    }
+  });
   applySettings(); renderSaved(); loadWeather();
   setInterval(() => { if (!document.hidden && !state.loading && !state.locating) loadWeather(); }, 15 * 60 * 1000);
 })();

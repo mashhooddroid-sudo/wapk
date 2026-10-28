@@ -1,7 +1,7 @@
 # WAPK — Weather Alert PK: Complete Infrastructure Guide
 
 > Everything about how WAPK works: what runs where, where every piece of data comes from, how to deploy, how to fix things.
-> Written 25 October 2026. If something changes, update this file.
+> Written 25 October 2026, updated 28 October 2026 (Health section). If something changes, update this file.
 
 ---
 
@@ -20,6 +20,7 @@
 11. [Lightning strikes](#11-lightning-strikes)
 12. [METAR (live airport weather)](#12-metar-live-airport-weather)
 13. [Thunderstorm, hail and fog rules](#13-thunderstorm-hail-and-fog-rules)
+13b. [Health section](#13b-health-section)
 14. [The Maps screen: how it behaves](#14-the-maps-screen-how-it-behaves)
 15. [Schedules: what runs when](#15-schedules-what-runs-when)
 16. [Costs and free-tier limits](#16-costs-and-free-tier-limits)
@@ -40,7 +41,7 @@ other places: some are free public services, some are **your own** Cloudflare se
 ```
                          ┌──────────────────────────────────────────────┐
                          │        Visitor's browser (wapk.pages.dev)    │
-                         │  Overview · Hourly · This week · Maps        │
+                         │  Overview · Hourly · This week · Maps · Health│
                          └──────────────┬───────────────────────────────┘
                                         │ reads from
       ┌───────────────┬─────────────────┼──────────────────┬──────────────────────┬──────────────────┐
@@ -52,7 +53,8 @@ other places: some are free public services, some are **your own** Cloudflare se
                                        │               PMD radar list)
                                        │                    ▲   ▲   ▲
                               GitHub Actions             cron every 5 min
-                              every 3 hours              │   │   └── PMD manifest (ffd.pmd.gov.pk)
+                              every 3 hours              │   │   ├── PMD radar manifest (ffd.pmd.gov.pk)
+                                                         │   │   └── PMD pollen page (weather.gov.pk), every 3 h
                               (Python pipeline)          │   └────── EUMETSAT satellite (view.eumetsat.int)
                                        ▲                 └────────── Lightning feed (lightning-alerts worker)
                                        │
@@ -67,8 +69,8 @@ other places: some are free public services, some are **your own** Cloudflare se
 | Website | The pages people see | Cloudflare Pages project `wapk` → https://wapk.pages.dev |
 | Forecast map data | ECMWF model turned into small files | Cloudflare Pages project `wapk-forecast` → https://wapk-forecast.pages.dev |
 | Map data builder | Python script that makes the files above | GitHub repo `mashhooddroid-sudo/wapk`, runs on GitHub Actions |
-| Backend worker | Lightning, satellite, radar list | Cloudflare Worker `lightning-weatherx-pk-api` |
-| Database | Strikes + satellite images | Cloudflare D1 `lightning-pk-strikes` |
+| Backend worker | Lightning, satellite, radar list, PMD pollen | Cloudflare Worker `lightning-weatherx-pk-api` |
+| Database | Strikes, satellite images, pollen reports | Cloudflare D1 `lightning-pk-strikes` |
 | METAR API | Live airport weather | Your separate worker `travel-weather-api.mashhood2717.workers.dev` |
 
 ---
@@ -120,8 +122,9 @@ Make a new one the same way and paste it into the secret.
 | `radar.css` | Look of the Maps screen (layer rail, timeline, satellite bar, legend). |
 | `app.js` | Overview / Hourly / Week: fetches the forecast, METAR, air quality, city search; draws everything. |
 | `weather-logic.js` | Thunderstorm, hail and fog rules ported from your Flutter app. |
+| `health.js` | Health section: alerts, air quality, PMD pollen, dengue mosquito risk, heat/cold/UV. |
 | `icons.js` | All the drawn icons (weather icons and small UI icons). |
-| `views.js` | Switching between screens, settings panel open/close. |
+| `views.js` | Switching between screens (Overview, Maps, Health), settings panel open/close. |
 | `effects.js` | Visual effects (cursor trail, glass). |
 | `radar.js` | Maps screen: Leaflet map, lightning, PMD radar, satellite, zoom limits; starts the forecast map. |
 | `forecast.js` | Forecast map layers: colours, wind particles, timeline, layer rail with dropdowns, popups. |
@@ -140,8 +143,8 @@ Make a new one the same way and paste it into the secret.
 - **Hosting:** Cloudflare Pages project **`wapk`**, account mashhood.droid.
 - **Address:** https://wapk.pages.dev
 - **Type:** static files only. No build step, no framework. Leaflet 1.9.4 for the map.
-- **The ten files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
-  styles.css, radar.css, weather-logic.js`. **Nothing else.**
+- **The eleven files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
+  styles.css, radar.css, weather-logic.js, health.js`. **Nothing else.**
 
 ### Screens
 
@@ -151,6 +154,7 @@ Make a new one the same way and paste it into the secret.
 | Hourly forecast | Hour by hour | Open-Meteo |
 | This week | 7 days, tap a day for details (rain, wind, UV, day/night, storm strength, hail) | Open-Meteo |
 | Maps | Forecast layers, satellite, PMD radar, lightning | Your map data, your worker, PMD |
+| Health (`#healthView`) | Health alerts, air quality, pollen, dengue mosquito risk, heat/cold/UV | Open-Meteo, PMD pollen via your worker |
 
 ### Things the browser remembers (localStorage, per visitor)
 
@@ -176,6 +180,9 @@ Make a new one the same way and paste it into the secret.
 | Satellite | EUMETSAT Meteosat (Indian Ocean service, satellite at 45.5°E) | Your worker stores images in D1 | New image every 15 min, usually 30–50 min old |
 | PMD radar | PMD Flood Forecasting Division (ffd.pmd.gov.pk) | Worker proxies the list; images load straight from PMD | 10 min (sri, cappi01), hourly (rain12) |
 | Lightning | Your lightning-alerts worker `/buffer` | Your PK worker stores in D1 | Every 5 min |
+| **Pollen** (Health) | **PMD R&D pollen monitoring**, https://weather.gov.pk/rnd/pollen-data (Islamabad) | Worker reads the page every 3 h, stores one report per PMD date, serves `/api/pollen` | PMD updates once a day |
+| Health air quality | Open-Meteo Air Quality (CAMS) — AQI + pollutants, 4 days | Direct | Hourly |
+| Health weather risks | Open-Meteo forecast with `past_days=14` | Direct | Hourly |
 | Base map | Esri (dark grey canvas) / OpenStreetMap | Direct tiles | — |
 
 **Key point:** both the forecast pages and the map use the **same ECMWF model**, but:
@@ -374,6 +381,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `GET /api/search` | Place search | Lightning Weather X |
 | `GET /api/weather-layers` | Old EUMETSAT layer list | **Lightning Weather X — keep it** |
 | `GET /api/pmd-radar` | PMD radar list (manifest), cached 2 min | WAPK Maps |
+| `GET /api/pollen` | Latest PMD pollen report + up to 30 days of history (cached 15 min) | WAPK Health |
 | `GET /api/satellite` | Satellite products, their stored times (`frames`) and image addresses | WAPK Maps |
 | `GET /api/satellite/<product>?t=<time>` | One stored satellite image (cached 1 day in browsers) | WAPK Maps |
 
@@ -382,6 +390,8 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 1. **Lightning:** fetch the lightning-alerts `/buffer`, keep strikes inside Pakistan from the last 24 h, store in D1.
 2. **Satellite:** fetch up to **6** images (3 at a time) from EUMETSAT: newest first, then fill missing hourly images
    of the past 24 h; delete images older than 24 h.
+3. **Pollen:** if the last read is more than **3 hours** old, read PMD's pollen page, store/replace that PMD date's
+   report, delete reports older than **120 days**.
 
 ### D1 tables (`lightning-pk-strikes`)
 
@@ -390,6 +400,7 @@ Small JSON file. The map always reads this first (cached 5 minutes). Example par
 | `strikes` | One row per strike (id, lat, lon, timestamp, raw JSON) |
 | `ingest_runs` | A log of each strike refresh |
 | `satellite_frames` | Satellite images: product, time, image bytes (key = product + time) |
+| `pollen_reports` | One PMD pollen report per date: `report_date` (key), `label`, `fetched_at`, `data` (JSON: sites + types) |
 | `satellite_images` | **Old, unused** (≈ 3 MB). Replaced by `satellite_frames`. Safe to delete. |
 
 **Backups of earlier worker versions** are kept in Claude's scratchpad (`lwx-backup/worker-pk*`) — treat them as temporary.
@@ -546,6 +557,72 @@ current hour.
 
 ---
 
+## 13b. Health section
+
+Opened from **Health** in the sidebar (address `#healthView`). Code: `health.js`. Everything is for the chosen place.
+
+### Cards
+
+| Card | What it shows | Source |
+|---|---|---|
+| **Health alerts** | Every alert for today + next 2 days, worst first. The same alert on several days is one card ("Today, Tomorrow, Friday"). | All of the below |
+| **Air quality** | US AQI dial + category + advice; PM2.5, PM10, O₃, NO₂, SO₂, CO, dust (µg/m³); highest AQI each of 4 days | Open-Meteo Air Quality (CAMS) |
+| **Pollen allergy** | PMD's latest Islamabad count: each pollen type, PMD's level (Absent/Low/Moderate/High/Very high), count, 14-day trend | PMD via `/api/pollen` |
+| **Dengue mosquito risk** | Today's level, the four factors with meters, 7-day strip, prevention advice | Calculated from Open-Meteo weather |
+| **Heat, cold and UV** | 7 days: feels-like low/high, UV max, rain | Open-Meteo |
+
+### PMD pollen — details
+
+- Page: https://weather.gov.pk/rnd/pollen-data — "Islamabad Pollen Count (Last 24 Hours)".
+- The numbers are written into the page's script as `rows.push({ type: "Grasses", 'H-8': "24", 'E-8': null, …, category: "High" })`,
+  the sampling sites in `const ALL_COLS = ['H-8','E-8','G-6','F-10']`, the date in "Last Updated: October 27, 2026".
+  The worker's `parsePmdPollen()` reads exactly these three things. **If PMD redesigns the page, this is what breaks** —
+  the worker logs "pollen refresh failed" and the Health card keeps showing the last stored report.
+- PMD's own JSON endpoint (`/rnd/pollen-data/ajax-data?month=…`) returned empty rows when tested, so the page is used.
+- Sampling sites are Islamabad sectors **H-8, E-8, G-6, F-10**; on 27 Oct 2026 only H-8 reported.
+- Pollen types seen: Acacia, Alternaria (a mould spore), Cannabis, Dandelion, Eucalyptus, Grasses, Paper Mulberry, Pines.
+  Paper mulberry is Islamabad's big spring allergy cause (Feb–April).
+- **Levels are PMD's own** (each pollen type has its own thresholds) — WAPK does not recalculate them.
+- History builds by one report per PMD day (trend shows "building" until there are 2).
+- **Pollen alerts only appear within 150 km of Islamabad.** Farther away the card still shows, with a distance note.
+
+### Dengue mosquito risk — how it is calculated
+
+There is **no open feed of dengue cases** in Pakistan (NIH and provincial health departments publish PDFs/dashboards).
+So WAPK estimates how favourable the **weather** is for *Aedes* mosquitoes. Points per day (0–8):
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| Daily mean temperature | < 16 °C | 16–20 °C | 20–24 °C (or 32–35 → 2, > 35 → 1) | 24–32 °C (ideal) |
+| Daily mean humidity | < 50 % | 50–70 % | ≥ 70 % | |
+| Rain in the previous 14 days | < 5 mm | 5–25 mm | ≥ 25 mm | |
+| Season (Aug–Nov, Pakistan's dengue season) | other months | Aug–Nov | | |
+
+Total **0–2 Low · 3–4 Moderate · 5–6 High · 7–8 Very high**. Below 16 °C mean it is capped at Low (mosquitoes barely bite).
+High and Very high raise an alert. The card clearly says it is a weather estimate, not case counts.
+
+### Alert rules (today + next 2 days)
+
+| Alert | Trigger | Severity |
+|---|---|---|
+| Extreme heat danger | Feels-like max ≥ 54 °C | severe |
+| Heatstroke danger | Feels-like max ≥ 41 °C | high |
+| Heat caution | Feels-like max ≥ 35 °C | moderate |
+| Severe cold | Feels-like min ≤ −10 °C | high |
+| Freezing night | Min temperature ≤ 0 °C | moderate |
+| Extreme UV | UV max ≥ 11 | high |
+| Very high UV | UV max ≥ 8 | moderate |
+| Air quality | Day's highest US AQI > 100 (101–150 moderate, 151–300 high, > 300 severe) | as listed |
+| Dust storm conditions / Dusty air | Dust ≥ 500 / ≥ 200 µg/m³ | high / moderate |
+| Smog / Fog | Visibility < 1 km (smog if AQI > 150 too) | high / moderate |
+| Thunderstorms (with possible hail) | Day's classified code is a storm (section 13); hail or severe strength → high | moderate / high |
+| Dengue mosquito risk | High / Very high | moderate / high |
+| Pollen high / very high | Any type High / Very high in PMD's latest count, place within 150 km of Islamabad | moderate / high |
+
+Heat bands follow the NOAA heat index; AQI bands are the US EPA's.
+
+---
+
 ## 14. The Maps screen: how it behaves
 
 ### Layout
@@ -601,6 +678,7 @@ markers.
 | ECMWF new run available (00Z / 12Z) | ≈ 07:40–08:00 UTC and 19:40–20:00 UTC (≈ 1 PM / 1 AM PKT) | ECMWF |
 | Map data check/build | Every 3 hours at :25 UTC | GitHub Actions |
 | Lightning + satellite fetch | Every 5 minutes | Cloudflare Worker cron |
+| PMD pollen page read | Every 3 hours (first cron run after 3 h) | Cloudflare Worker cron |
 | PMD radar list cache | 2 minutes in the worker; browser refreshes every 5 min | Worker / browser |
 | Satellite list refresh in browser | Every 5 minutes | Browser |
 | Lightning auto-refresh in browser | Every 15 minutes (if on) | Browser |
@@ -620,7 +698,8 @@ markers.
 | GitHub Actions (private repo) | 2,000 minutes/month | ≈ 600–750 min/month (2 full builds/day × ~10 min + quick checks) |
 | ECMWF open data | Free, CC-BY-4.0 (credit required — shown on the map) | 2 runs/day |
 | EUMETSAT View | Free | ≈ 32–72 image requests/hour |
-| Open-Meteo | Free for **non-commercial** use (10,000 calls/day) | 2 calls per page load + air quality + search |
+| Open-Meteo | Free for **non-commercial** use (10,000 calls/day) | 2 calls per page load + air quality + search; Health adds 2 (weather + air quality) |
+| PMD website | Public page | One read every 3 hours by the worker |
 | PMD | Permission given | Direct image loads |
 
 **Watch out:** if WAPK becomes commercial, Open-Meteo needs a paid plan (or move the forecast pages to your own ECMWF data).
@@ -635,13 +714,16 @@ markers.
 # 1. Check the account
 npx wrangler whoami          # must say Mashhood.droid@gmail.com's Account
 
-# 2. Copy ONLY the ten site files into an empty folder (never deploy the project folder itself)
+# 2. Copy ONLY the eleven site files into an empty folder (never deploy the project folder itself)
 mkdir C:\temp\wapk-dist
-copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js C:\temp\wapk-dist\
+copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js C:\temp\wapk-dist\
 
 # 3. Deploy
 npx wrangler pages deploy C:\temp\wapk-dist --project-name wapk --branch main
 ```
+
+**To test before going live:** use `--branch health-preview` (or any name) instead of `--branch main`. You get a private
+preview address like `https://health-preview.wapk.pages.dev`; the live site is untouched until you deploy `main`.
 
 **Before deploying a change:** bump the `?v=` number of every changed JS/CSS file in `index.html`
 (e.g. `forecast.js?v=20261025-36` → `-37`). Otherwise browsers keep the old file.
@@ -709,6 +791,9 @@ Open https://wapk-forecast.pages.dev/latest.json → look at `run` and `generate
 **See if satellite is current**
 Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite → each product's `time` and `frames`.
 
+**See if pollen is current**
+Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/pollen → `latest.date` and `latest.label`.
+
 **See worker logs live**
 `npx wrangler tail lightning-weatherx-pk-api` (inside `D:\Lightning Weather x`).
 
@@ -725,6 +810,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite 
 | Satellite blank or "preparing" | Worker hasn't stored that product yet, or EUMETSAT slow | Wait 5–10 min; check `/api/satellite`. |
 | Satellite history short | Table recently emptied | Fills in about 5 hours. |
 | PMD radar not showing | Usually PMD offline or simply no rain | Check `https://ffd.pmd.gov.pk/radar/manifest` → `latest_at`. Don't debug code first. |
+| Pollen card shows an old date | PMD hasn't updated, or PMD changed its page | Compare with https://weather.gov.pk/rnd/pollen-data. If the page shows a newer date, check worker logs for "pollen refresh failed" and update `parsePmdPollen()`. |
 | Site change not visible | Browser cache | Bump `?v=` in `index.html`; Ctrl+F5. |
 | Current conditions show "Forecast model estimate" | No airport within radius or METAR older than 90 min | Normal behaviour. |
 | Open-Meteo errors | Rate limit or outage | Wait; site shows a retry message. |
@@ -735,7 +821,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite 
 
 ## 20. Rules and gotchas to never forget
 
-1. **Deploy only the ten site files**, never the whole project folder (`.openai/` and `test.txt` are private).
+1. **Deploy only the eleven site files**, never the whole project folder (`.openai/` and `test.txt` are private).
 2. **Always check `npx wrangler whoami`** shows mashhood.droid before deploying.
 3. **Bump `?v=`** in `index.html` for every changed JS/CSS file.
 4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
@@ -751,6 +837,8 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/satellite 
 13. **ECMWF credit (CC-BY-4.0)** must stay on the map.
 14. Open-Meteo is free only for **non-commercial** use.
 15. Don't change **global git settings** on your PC (repo-local only).
+16. Dengue risk is a **weather estimate**, never present it as case data. Health text is general guidance, not medical advice.
+17. Pollen levels are **PMD's categories** — don't recalculate them; keep the PMD credit on the Health page.
 
 ---
 
