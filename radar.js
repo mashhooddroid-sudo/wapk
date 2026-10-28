@@ -318,6 +318,7 @@
     if (state.initialized && els.mapTheme.value === "auto") setTileLayer("auto");
     state.forecast?.setTheme(state.theme);
     if (state.initialized) renderSatellite();
+    styleBorders();
   }
 
   function initMap() {
@@ -349,6 +350,11 @@
     if (els.firesToggle.checked) state.fireLayer.addTo(state.map);
     state.strikeLayer = L.layerGroup();
     setStrikesVisible(readStrikesPreference(), false);
+    // Country borders, coastlines and Pakistan's provinces, drawn crisply above the forecast colours and wind like
+    // Windy (the base map's own borders fade under the colours). Below place names.
+    state.map.createPane("boundaries").style.zIndex = "385";
+    state.map.getPane("boundaries").style.pointerEvents = "none";
+    loadBorders();
     // Place names stay readable above the forecast colours and wind.
     state.map.createPane("mapLabels").style.zIndex = "390";
     state.map.getPane("mapLabels").style.pointerEvents = "none";
@@ -1108,6 +1114,64 @@
     } catch {
       // The choice still applies for this visit when browser storage is unavailable.
     }
+  }
+
+  // ── Borders (Natural Earth, Pakistan's point of view; see borders.json) ──
+
+  const BORDER_FILE = "borders.json?v=20261028-1";
+  const PROVINCES_FROM_ZOOM = 5;
+
+  async function loadBorders() {
+    try {
+      // Plain fetch so the browser may cache it (the shared helper turns caching off for live data).
+      const response = await fetch(BORDER_FILE, { signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`borders returned ${response.status}`);
+      const data = await response.json();
+      const toLatLngs = (lines) => lines.map((flat) => {
+        const points = [];
+        for (let index = 0; index < flat.length; index += 2) points.push([flat[index], flat[index + 1]]);
+        return points;
+      });
+      const renderer = L.canvas({ pane: "boundaries", padding: 0.3 });
+      const line = (latlngs) => L.polyline(latlngs, { renderer, interactive: false, lineCap: "round", lineJoin: "round", smoothFactor: 0.6 });
+      const countries = toLatLngs(data.countries || []);
+      const provinces = toLatLngs(data.provinces || []);
+      // A soft dark halo under a thin light line keeps borders readable on every colour.
+      state.borders = {
+        countryHalo: line(countries),
+        country: line(countries),
+        provinceHalo: line(provinces),
+        province: line(provinces),
+      };
+      state.borders.group = L.layerGroup([state.borders.countryHalo, state.borders.country]).addTo(state.map);
+      state.borders.provinceGroup = L.layerGroup([state.borders.provinceHalo, state.borders.province]);
+      styleBorders();
+      showProvincesForZoom();
+      state.map.on("zoomend", showProvincesForZoom);
+    } catch {
+      // The base map still has its own (fainter) borders.
+    }
+  }
+
+  function styleBorders() {
+    const borders = state.borders;
+    if (!borders) return;
+    const light = state.theme === "light";
+    const ink = light ? "#1f3550" : "#f4f8ff";
+    const halo = light ? "#ffffff" : "#000814";
+    borders.countryHalo.setStyle({ color: halo, weight: 3.4, opacity: light ? 0.55 : 0.45 });
+    borders.country.setStyle({ color: ink, weight: 1.15, opacity: light ? 0.85 : 0.82 });
+    borders.provinceHalo.setStyle({ color: halo, weight: 2.4, opacity: light ? 0.35 : 0.3, dashArray: null });
+    borders.province.setStyle({ color: ink, weight: 0.8, opacity: light ? 0.6 : 0.55, dashArray: "4 4" });
+  }
+
+  // Province lines only once the map is zoomed in far enough to need them.
+  function showProvincesForZoom() {
+    const borders = state.borders;
+    if (!borders) return;
+    const show = state.map.getZoom() >= PROVINCES_FROM_ZOOM;
+    if (show && !state.map.hasLayer(borders.provinceGroup)) borders.provinceGroup.addTo(state.map);
+    else if (!show && state.map.hasLayer(borders.provinceGroup)) state.map.removeLayer(borders.provinceGroup);
   }
 
   // ── Active fires (NASA FIRMS via the PK worker) ──────────────────────────
