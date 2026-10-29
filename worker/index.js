@@ -33,6 +33,9 @@ const SATELLITE_PRODUCTS = {
   dust: { label: "Dust", layer: "msg_iodc:rgb_dust", format: "image/jpeg", note: "Dust shows pink to magenta" },
   convection: { label: "Convection", layer: "msg_iodc:rgb_convection", format: "image/jpeg", note: "Strong storms show bright yellow; daylight only" },
   rain: { label: "Rain rate", layer: "msg_iodc:h63", style: "msg_h60b_h63", format: "image/png", note: "Satellite rain estimate (H SAF)" },
+  // Small copies (about 30 KB) the map uses while the time slider is dragged or the loop plays, so it keeps up.
+  ir108s: { label: "Infrared (small)", layer: "msg_iodc:ir108", format: "image/jpeg", note: "Small copy for playback", width: 640, hidden: true },
+  vis006s: { label: "Visible (small)", layer: "msg_iodc:vis006", format: "image/jpeg", note: "Small copy for playback", width: 640, hidden: true },
 };
 let satelliteTimesCache = null;
 const API_TIMEZONE_OFFSET = "+05:00";
@@ -546,6 +549,7 @@ async function handleSatelliteList(url, env) {
         id,
         label: product.label,
         note: product.note,
+        ...(product.hidden ? { hidden: true } : {}),
         time: times[id] || null,
         // The image time is in the address, so a browser can keep each picture until a newer one appears.
         url: `${url.origin}/api/satellite/${id}${times[id] ? `?t=${encodeURIComponent(times[id])}` : ""}`,
@@ -682,7 +686,8 @@ async function storeSatelliteImage(env, id, time) {
   const mercatorX = (lon) => (6378137 * lon * Math.PI) / 180;
   const mercatorY = (lat) => 6378137 * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
   const { north, south, west, east } = SATELLITE_REGION;
-  const height = Math.round((SATELLITE_WIDTH * (mercatorY(north) - mercatorY(south))) / (mercatorX(east) - mercatorX(west)));
+  const width = product.width || SATELLITE_WIDTH;
+  const height = Math.round((width * (mercatorY(north) - mercatorY(south))) / (mercatorX(east) - mercatorX(west)));
   const params = new URLSearchParams({
     service: "WMS",
     version: "1.1.1",
@@ -691,7 +696,7 @@ async function storeSatelliteImage(env, id, time) {
     styles: product.style || "",
     srs: "EPSG:3857",
     bbox: [mercatorX(west), mercatorY(south), mercatorX(east), mercatorY(north)].map((value) => value.toFixed(0)).join(","),
-    width: String(SATELLITE_WIDTH),
+    width: String(width),
     height: String(height),
     format: product.format,
     transparent: product.format === "image/png" ? "true" : "false",

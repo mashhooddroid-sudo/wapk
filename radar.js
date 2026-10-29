@@ -549,6 +549,12 @@
       const frames = satelliteFrames(currentSatelliteProduct());
       const index = Number(els.satelliteSlider.value);
       state.satelliteTime = index >= frames.length - 1 ? null : frames[index];
+      // While dragging, pictures are drawn at reduced size so each step keeps up; full size on release.
+      state.satelliteScrubbing = true;
+      renderSatellite();
+    });
+    els.satelliteSlider.addEventListener("change", () => {
+      state.satelliteScrubbing = false;
       renderSatellite();
     });
 
@@ -939,6 +945,64 @@
     return { grey, width: canvas.width, height: canvas.height };
   }
 
+  // Small copies (640 px, ~30 KB) the worker stores as hidden products "<id>s", for dragging and playback.
+  // Older small copies are hourly, so the nearest within 30 minutes stands in while moving.
+  function smallSatelliteUrl(id, time) {
+    const small = state.satelliteMeta?.products.find((item) => item.id === `${id}s`);
+    const target = Date.parse(time);
+    if (!small?.frames?.length || !Number.isFinite(target)) return null;
+    let best = null;
+    for (const frame of small.frames) {
+      const gap = Math.abs(Date.parse(frame) - target);
+      if (gap <= 30 * 60 * 1000 && (!best || gap < best.gap)) best = { frame, gap };
+    }
+    return best ? `${small.frameUrl}${encodeURIComponent(best.frame)}` : null;
+  }
+
+  // Loads the pictures next to the one shown into the browser's cache (they are cached for a day), so stepping
+  // or dragging to them does not wait for the network.
+  function prefetchSatelliteNeighbours(product) {
+    const frames = satelliteFrames(product);
+    const index = frames.indexOf(product.time);
+    if (index < 0 || !product.frameUrl) return;
+    [1, -1, 2, -2, 3, -3].forEach((offset) => {
+      const time = frames[index + offset];
+      if (!time) return;
+      const urls = [`${product.frameUrl}${encodeURIComponent(time)}`, smallSatelliteUrl(product.id, time)];
+      if (product.id === "vis006") urls.push(infraredUrlAt(time), smallSatelliteUrl("ir108", time));
+      urls.filter(Boolean).forEach((url) => {
+        state.satellitePrefetched ||= new Set();
+        if (state.satellitePrefetched.has(url)) return;
+        state.satellitePrefetched.add(url);
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.src = url;
+      });
+    });
+  }
+
+  // Small copies of every stored picture of a product (and of infrared, for Visible's night side), loaded from the
+  // worker in the background four at a time, nearest the shown time first, so dragging and playing are instant.
+  function preloadSmallSatellite(id) {
+    state.satelliteSmallLoaded ||= new Set();
+    if (state.satelliteSmallLoaded.has(id)) return;
+    state.satelliteSmallLoaded.add(id);
+    const product = state.satelliteMeta?.products.find((item) => item.id === id);
+    const frames = satelliteFrames(product || {});
+    const shown = Math.max(0, frames.indexOf(state.satelliteTime ?? frames[frames.length - 1]));
+    const queue = [...new Set([...frames].sort((a, b) => Math.abs(frames.indexOf(a) - shown) - Math.abs(frames.indexOf(b) - shown))
+      .flatMap((time) => [smallSatelliteUrl(id, time), id === "vis006" ? smallSatelliteUrl("ir108", time) : null])
+      .filter(Boolean))];
+    const next = () => {
+      if (!queue.length || !els.satelliteToggle.checked) return;
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = image.onerror = next;
+      image.src = queue.shift();
+    };
+    for (let lane = 0; lane < 4; lane += 1) next();
+  }
+
   // The infrared picture of the same moment, for the night side of Visible.
   function infraredUrlAt(time) {
     const infrared = state.satelliteMeta?.products.find((item) => item.id === "ir108");
@@ -983,10 +1047,12 @@
     return weights;
   }
 
-  async function styledCanvas(product) {
-    const key = `${product.id}|${product.url}`;
+  async function styledCanvas(product, scale = 1) {
+    const key = `${product.id}|${product.url}|${scale}`;
     if (styledCanvases.has(key)) return styledCanvases.get(key);
-    const { grey, width, height } = await greyLevels(product.url);
+    // While dragging or playing, the small copy (same picture, ~30 KB) keeps up; without one, the full picture.
+    const small = scale < 1 ? smallSatelliteUrl(product.id, product.time) : null;
+    const { grey, width, height } = await greyLevels(small || product.url);
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -995,7 +1061,7 @@
     const pixels = picture.data;
     const table = satelliteTable(product.id);
     // Visible is empty at night: there the infrared picture of the same moment fills in.
-    const infraredUrl = product.id === "vis006" && product.time ? infraredUrlAt(product.time) : null;
+    const infraredUrl = product.id === "vis006" && product.time ? (small ? smallSatelliteUrl("ir108", product.time) : infraredUrlAt(product.time)) : null;
     const night = infraredUrl ? await greyLevels(infraredUrl, width, height).catch(() => null) : null;
     const weights = night ? daylightWeights(product.time, width, height) : null;
     const irTable = night ? satelliteTable("irPlain") : null;
@@ -1026,17 +1092,24 @@
     pane.style.mixBlendMode = "normal";
     if (state.satelliteOverlay) state.map.removeLayer(state.satelliteOverlay);
     state.satelliteOverlay = null;
-    const key = `${product.id}|${product.url}`;
+    // Dragging and playback use the small copies (preloaded below); a still picture is drawn at full size.
+    const scale = state.satelliteScrubbing || state.satellitePlayTimer ? 0.5 : 1;
+        const key = `${product.id}|${product.url}|${scale}`;
     if (state.satelliteStyledKey === key) {
       state.satelliteStyled?.setOpacity(styledOpacity());
       describeSatellite(product);
+      return;
+    }
+    // One picture is drawn at a time; slider steps that arrive meanwhile only keep the latest for afterwards.
+    if (state.satelliteStyling) {
+      state.satelliteStyledQueued = true;
       return;
     }
     const request = ++state.satelliteRequest;
     state.satelliteStyling = true;
     if (!state.satelliteStyled) setWeatherStatus(`Loading ${product.label.toLowerCase()} image…`);
     try {
-      const canvas = await styledCanvas(product);
+      const canvas = await styledCanvas(product, scale);
       if (request !== state.satelliteRequest || !els.satelliteToggle.checked) return;
       CanvasImageOverlay ||= L.ImageOverlay.extend({
         _initImage() {
@@ -1063,10 +1136,18 @@
       describeSatellite(product);
       renderSatelliteLegend(product.id);
       state.forecast?.refreshPicker();
+      if (scale === 1) {
+        prefetchSatelliteNeighbours(product);
+        preloadSmallSatellite(product.id);
+      }
     } catch {
       if (request === state.satelliteRequest) setWeatherStatus(`The ${product.label.toLowerCase()} image is not available right now.`);
     } finally {
-      if (request === state.satelliteRequest) state.satelliteStyling = false;
+      state.satelliteStyling = false;
+      if (state.satelliteStyledQueued) {
+        state.satelliteStyledQueued = false;
+        renderSatellite();
+      }
     }
   }
 
@@ -1192,9 +1273,12 @@
   }
 
   function stopSatellitePlayback() {
+    const wasPlaying = Boolean(state.satellitePlayTimer);
     window.clearInterval(state.satellitePlayTimer);
     state.satellitePlayTimer = null;
     setSatellitePlayIcon(false);
+    // Back to a full-size picture where playback stopped.
+    if (wasPlaying && state.satelliteStyled && els.satelliteToggle.checked && state.satelliteMeta) renderSatellite();
   }
 
   function setSatellitePlayIcon(playing) {
