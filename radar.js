@@ -804,6 +804,9 @@
     // so black disappears into the map and the dark map barely changes the image's own colours.
     pane.style.mixBlendMode = state.theme === "dark" ? "screen" : "normal";
     pane.dataset.enhance = SATELLITE_ENHANCE[product.id] || "";
+    // Opacity is set on the whole pane, not each picture: the stored picture and the full-resolution tiles
+    // drawn over it would otherwise add up and look washed out once the tiles arrive.
+    pane.style.opacity = String(getWeatherOpacity());
     updateSatelliteTiles(product);
     if (state.satelliteOverlay?._url === product.url) {
       describeSatellite(product);
@@ -814,7 +817,7 @@
     setWeatherStatus(product.time ? `Loading ${product.label.toLowerCase()} image…` : `Preparing the ${product.label.toLowerCase()} image. The first copy can take up to a minute…`);
     const overlay = L.imageOverlay(product.url, state.satelliteMeta.bounds, {
       pane: "satellite",
-      opacity: getWeatherOpacity(),
+      opacity: 1,
       interactive: false,
       className: "satellite-image",
       attribution: 'Satellite &copy; <a href="https://www.eumetsat.int/" target="_blank" rel="noopener noreferrer">EUMETSAT</a>',
@@ -825,7 +828,7 @@
       if (state.satelliteOverlay && state.satelliteOverlay !== overlay) state.map.removeLayer(state.satelliteOverlay);
       state.satelliteOverlay = overlay;
       state.satellitePending = null;
-      overlay.setOpacity(getWeatherOpacity());
+      overlay.setOpacity(1);
       describeSatellite(product);
     });
     overlay.once("error", () => {
@@ -847,7 +850,7 @@
     const wanted = wms && product.time && !state.satellitePlayTimer && state.map.getZoom() >= SATELLITE_TILES_FROM_ZOOM;
     const key = wanted ? `${product.id}|${product.time}` : null;
     if (state.satelliteTilesKey === key) {
-      state.satelliteTiles?.setOpacity(getWeatherOpacity());
+      state.satelliteTiles?.setOpacity(1);
       return;
     }
     const previous = state.satelliteTiles;
@@ -867,7 +870,7 @@
       pane: "satellite",
       tileSize: 512,
       maxNativeZoom: SATELLITE_TILES_NATIVE_ZOOM,
-      opacity: getWeatherOpacity(),
+      opacity: 1,
       bounds: state.satelliteMeta.bounds,
       className: "satellite-tiles",
     });
@@ -974,8 +977,7 @@
   function updateWeatherOpacity() {
     const opacity = getWeatherOpacity();
     state.pmdLayer?.eachLayer((layer) => layer.setOpacity(opacity));
-    state.satelliteOverlay?.setOpacity(opacity);
-    state.satelliteTiles?.setOpacity(opacity);
+    if (state.map) state.map.getPane("satellite").style.opacity = String(opacity);
   }
 
   function getWeatherOpacity() {
