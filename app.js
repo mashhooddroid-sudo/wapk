@@ -239,32 +239,10 @@
     text('condition', 'Loading your forecast\u2026'); text('heroInsight', `Getting the latest outlook for ${selected.name}.`);
     text('lastUpdated', 'Connecting to forecast data');
     loadMetar(selected, requestId);
-    // ECMWF IFS (as in the Weather & Prayer Alert PK app, whose storm and hail rules are fitted to it), plus the
-    // fields ECMWF does not provide from Open-Meteo's default model: rain probability, visibility, UV and the
-    // freezing level, 500 hPa temperature and wind and lifted index the storm and hail rules need.
-    const place = { latitude: String(selected.latitude), longitude: String(selected.longitude), timezone: 'auto', forecast_days: '7' };
-    const parameters = new URLSearchParams({
-      ...place, models: 'ecmwf_ifs',
-      current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure',
-      hourly: 'temperature_2m,precipitation,weather_code,cloud_cover,cape,dew_point_2m,wind_speed_10m,is_day',
-      daily: 'temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset,precipitation_sum,wind_speed_10m_max'
-    });
-    const auxParameters = new URLSearchParams({
-      ...place,
-      hourly: 'precipitation_probability,visibility,uv_index,freezing_level_height,temperature_500hPa,lifted_index,wind_speed_500hPa',
-      daily: 'uv_index_max,precipitation_probability_max'
-    });
     try {
-      const [payload, aux] = await Promise.all([
-        requestJSON(`https://api.open-meteo.com/v1/forecast?${parameters}`, controller),
-        // The forecast still shows without these; storms then rely on rain amount alone.
-        requestJSON(`https://api.open-meteo.com/v1/forecast?${auxParameters}`, controller).catch(() => null)
-      ]);
+      const payload = await fetchForecast(selected.latitude, selected.longitude, controller);
       if (requestId !== state.forecastId) return;
-      if (!payload.current || !Array.isArray(payload.hourly?.time) || !payload.hourly.time.length || !Array.isArray(payload.daily?.time) || !payload.daily.time.length) throw new Error('The forecast response was incomplete.');
-      mergeByTime(payload.hourly, aux?.hourly); mergeByTime(payload.daily, aux?.daily);
       state.weather = payload; state.fetchedAt = new Date();
-      state.weather.wapk = window.WapkWeatherLogic?.classifyForecast(payload, currentHourIndex()) || null;
       savePreferences(); renderWeather();
       document.dispatchEvent(new CustomEvent('atmos:weather'));
       loadAirQuality(selected, requestId);
@@ -279,6 +257,37 @@
       byId('chart').setAttribute('aria-label', 'Hourly forecast unavailable');
       setBanner(error.name === 'TimeoutError' ? `The forecast for ${selected.name} took too long to load. Please try again.` : `Could not load weather for ${selected.name}. Check your internet connection and try again.`);
     } finally { if (requestId === state.forecastId) setLoading(false); }
+  }
+
+  // The forecast for any point: ECMWF IFS (as in the Weather & Prayer Alert PK app, whose storm and hail rules
+  // are fitted to it), plus the fields ECMWF does not provide from Open-Meteo's default model: rain probability,
+  // visibility, UV and the freezing level, 500 hPa temperature and wind and lifted index the storm and hail rules
+  // need. The result carries `wapk`, the classified weather (storm tiers, hail, fog). Used by the dashboard and
+  // the map's point forecast.
+  async function fetchForecast(latitude, longitude, controller) {
+    const place = { latitude: String(latitude), longitude: String(longitude), timezone: 'auto', forecast_days: '7' };
+    const parameters = new URLSearchParams({
+      ...place, models: 'ecmwf_ifs',
+      current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure',
+      hourly: 'temperature_2m,precipitation,weather_code,cloud_cover,cape,dew_point_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,is_day',
+      daily: 'temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset,precipitation_sum,wind_speed_10m_max'
+    });
+    const auxParameters = new URLSearchParams({
+      ...place,
+      hourly: 'precipitation_probability,visibility,uv_index,freezing_level_height,temperature_500hPa,lifted_index,wind_speed_500hPa',
+      daily: 'uv_index_max,precipitation_probability_max'
+    });
+    const [payload, aux] = await Promise.all([
+      requestJSON(`https://api.open-meteo.com/v1/forecast?${parameters}`, controller),
+      // The forecast still shows without these; storms then rely on rain amount alone.
+      requestJSON(`https://api.open-meteo.com/v1/forecast?${auxParameters}`, controller).catch(() => null)
+    ]);
+    if (!payload.current || !Array.isArray(payload.hourly?.time) || !payload.hourly.time.length || !Array.isArray(payload.daily?.time) || !payload.daily.time.length) throw new Error('The forecast response was incomplete.');
+    mergeByTime(payload.hourly, aux?.hourly); mergeByTime(payload.daily, aux?.daily);
+    const next = payload.hourly.time.findIndex((time) => time > payload.current.time);
+    const nowIndex = next === -1 ? payload.hourly.time.length - 1 : Math.max(0, next - 1);
+    payload.wapk = window.WapkWeatherLogic?.classifyForecast(payload, nowIndex) || null;
+    return payload;
   }
 
   // Copies another response's series onto `target`, matched by time (both use the same timezone).
@@ -952,6 +961,8 @@
   // Read-only view of the dashboard for views.js and the map; changes are announced via atmos:place, atmos:theme and atmos:unit.
   window.Atmos = Object.freeze({
     get place() { return { ...state.place }; }, get theme() { return state.theme; }, get unit() { return state.unit; },
+    // For the map's point forecast and picker.
+    fetchForecast, condition, lookupPlace: (latitude, longitude) => lookupPlace({ latitude, longitude }),
     // Each forecast day's classified weather (storm tier, hail, storm strength), for the Health section.
     get forecastDays() {
       if (!state.weather?.daily?.time) return [];
@@ -962,6 +973,25 @@
       });
     }
   });
-  applySettings(); renderSaved(); loadWeather();
+  applySettings(); renderSaved();
+  // A link may name a place (?lat=…&lon=…, as the WAPK app's map does). Otherwise the first visit, and every visit
+  // once location is allowed, starts from the visitor's own location, as on Windy.
+  const linked = new URLSearchParams(window.location.search);
+  const linkedLat = Number(linked.get('lat'));
+  const linkedLon = Number(linked.get('lon'));
+  if (linked.has('lat') && linked.has('lon') && Math.abs(linkedLat) <= 90 && Math.abs(linkedLon) <= 180) {
+    const fallback = { name: linked.get('name') || 'Your location', latitude: linkedLat, longitude: linkedLon };
+    state.place = normalizeCity(fallback);
+    loadWeather();
+    lookupPlace({ latitude: linkedLat, longitude: linkedLon }).then((place) => {
+      if (place && state.place.latitude === linkedLat && state.place.longitude === linkedLon) loadWeather({ ...place, latitude: linkedLat, longitude: linkedLon });
+    }).catch(() => {});
+  } else {
+    loadWeather();
+    const firstVisit = !normalizeCity(preferences.place);
+    const locate = () => { if (!state.locating) byId('locationButton').click(); };
+    if (firstVisit) locate();
+    else navigator.permissions?.query({ name: 'geolocation' }).then((status) => { if (status.state === 'granted') locate(); }).catch(() => {});
+  }
   setInterval(() => { if (!document.hidden && !state.loading && !state.locating) loadWeather(); }, 15 * 60 * 1000);
 })();

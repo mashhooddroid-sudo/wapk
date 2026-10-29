@@ -88,7 +88,7 @@
       symbols: { 1: [95], 2: [96], 3: [97], 4: [99], 5: [97, true] },
     }),
     cape: {
-      label: "Thunderstorm potential", type: "Thunderstorm potential (CAPE)", unit: "CAPE, J/kg", field: "cape", transparentBelow: 100,
+      label: "Thunderstorm potential", type: "Thunderstorm potential (CAPE)", unit: "CAPE, J/kg", short: "J/kg", field: "cape", transparentBelow: 100,
       note: "CAPE is the energy available for thunderstorms; storms also need a trigger.",
       stops: [[100, "#fde68a", 0.35], [500, "#fbbf24"], [1000, "#f97316"], [2000, "#dc2626"], [3000, "#9d174d"], [4500, "#6b21a8"]],
     },
@@ -147,6 +147,7 @@
     };
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const saved = readPreferences();
+    const picker = { lat: null, lon: null, marker: null };
     const state = {
       meta: null,
       base: options.url.replace(/\/?$/, "/"),
@@ -234,14 +235,20 @@
       render();
     });
     els.play.addEventListener("click", () => (state.playTimer ? stopPlayback() : startPlayback()));
-    map.on("click", showPointForecast);
+    // Clicking the map moves the picker there (Windy-style), inside the forecast area.
+    map.on("click", (event) => {
+      const { lat, lng } = event.latlng;
+      if (state.meta && !insideGrid(lat, lng)) return;
+      setPicker(lat, lng);
+      options.onPickerMoved?.(lat, lng);
+    });
     map.on("resize", () => state.meta && renderTicks());
     document.addEventListener("atmos:unit", () => {
       renderLegend();
     });
     syncControls();
 
-    return { resume, pause, setTheme, setEnabled };
+    return { resume, pause, setTheme, setEnabled, setPicker, setTimeTo, openPicker: () => picker.lat !== null && options.onPickerOpen?.(picker.lat, picker.lon) };
 
     // Lets the satellite and radar controls switch the forecast colours off (or on).
     function setEnabled(enabled) {
@@ -452,7 +459,8 @@
       const layer = hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
       const fields = new Set();
       if (layer) (layer.field ? [layerField(layer, els.level.value)] : windFields()).forEach((field) => fields.add(field));
-      if (els.wind.checked) windFields().forEach((field) => fields.add(field));
+      // Wind is always loaded: the picker shows it whichever layer is on.
+      windFields().forEach((field) => fields.add(field));
       return [...fields];
     }
 
@@ -489,6 +497,8 @@
       const on = state.enabled && state.active && Boolean(state.meta) && (Boolean(layer) || showWind);
       if (!on) {
         clearDrawing();
+        state.lastData = null;
+        updatePicker();
         renderLegend();
         if (!state.enabled) setStatus("The forecast layer is off. Turn it on with Forecast in the layer list.");
         return;
@@ -505,6 +515,8 @@
       // A newer choice or hour arrived while this one was loading.
       if (renderId !== state.renderId || !state.active || !state.enabled) return;
       const level = els.level.value;
+      state.lastData = data;
+      updatePicker();
 
       if (layer) {
         const bounds = drawColorField(colorCanvas, state.meta, data, state.layer, level, state.theme);
@@ -674,6 +686,7 @@
       els.time.style.left = `${fraction * 100}%`;
       els.time.style.transform = `translateX(${fraction < 0.12 ? -10 : fraction > 0.88 ? -90 : -50}%)`;
       els.slider.setAttribute("aria-valuetext", formatTime(ms));
+      options.onTimeChange?.(ms);
     }
 
     function startPlayback() {
@@ -703,73 +716,108 @@
       els.play.innerHTML = window.AtmosIcons?.ui(playing ? "pause" : "play") || (playing ? "Pause" : "Play");
     }
 
-    async function showPointForecast(event) {
-      if (!state.meta || !state.active || !state.enabled) return;
-      const { lat, lng } = event.latlng;
+    // ── Picker (Windy-style) ────────────────────────────────────────────────
+    // A draggable pin whose bubble shows the chosen layer's value and the wind at that point for the map's
+    // time, updating while it is dragged. Tapping the bubble opens the point forecast.
+    function insideGrid(lat, lng) {
       const { north, west, step, nx, ny } = state.meta.grid;
-      if (lat > north + step / 2 || lat < north - (ny - 1) * step - step / 2 || lng < west - step / 2 || lng > west + (nx - 1) * step + step / 2) return;
-      const level = els.level.value;
-      const tempField = layerField(LAYERS.temp, level);
-      const humidityField = layerField(LAYERS.humidity, level);
-      const fields = [tempField, humidityField, "dew", `u${level}`, `v${level}`, "gust", "precip", "cloud", "pressure", "cape", "storm", "freezing", "snowdepth", "tcwv", "ptype"].filter((field) => state.meta.fields[field]);
-      let data;
-      try {
-        data = await loadFields(fields);
-      } catch {
+      return !(lat > north + step / 2 || lat < north - (ny - 1) * step - step / 2 || lng < west - step / 2 || lng > west + (nx - 1) * step + step / 2);
+    }
+
+    function setPicker(lat, lon) {
+      picker.lat = lat;
+      picker.lon = lon;
+      if (!picker.marker) {
+        picker.marker = L.marker([lat, lon], {
+          draggable: true,
+          keyboard: false,
+          zIndexOffset: 1000,
+          icon: L.divIcon({
+            className: "map-picker",
+            html: '<button class="picker-bubble" type="button" aria-label="Forecast for this place"><span class="picker-value">…</span><span class="picker-wind"></span><span class="picker-more" aria-hidden="true">›</span></button><span class="picker-dot"></span>',
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+          }),
+        });
+        picker.marker.on("drag", (event) => {
+          const position = event.target.getLatLng();
+          picker.lat = position.lat;
+          picker.lon = position.lng;
+          updatePicker();
+        });
+        picker.marker.on("dragend", () => options.onPickerMoved?.(picker.lat, picker.lon));
+        picker.marker.on("add", () => {
+          const bubble = picker.marker.getElement()?.querySelector(".picker-bubble");
+          if (!bubble) return;
+          L.DomEvent.disableClickPropagation(bubble);
+          bubble.addEventListener("click", () => options.onPickerOpen?.(picker.lat, picker.lon));
+          updatePicker();
+        });
+        picker.marker.addTo(map);
+      } else {
+        picker.marker.setLatLng([lat, lon]);
+        if (!map.hasLayer(picker.marker)) picker.marker.addTo(map);
+      }
+      updatePicker();
+    }
+
+    function setTimeTo(ms) {
+      if (!state.meta) return;
+      stopPlayback();
+      state.hour = Math.min(state.meta.lastHour, Math.max(0, Math.round((ms / 1000 - state.meta.times[0]) / 3600)));
+      els.slider.value = String(state.hour);
+      render();
+    }
+
+    // Short unit for the bubble: "mm since the run started" → "mm", "hPa, lines every 4" → "hPa".
+    function shortUnit(layer) {
+      return layer.short || layer.unit.split(",")[0].split(" ")[0];
+    }
+
+    function updatePicker() {
+      const node = picker.marker?.getElement();
+      if (!node) return;
+      const valueNode = node.querySelector(".picker-value");
+      const windNode = node.querySelector(".picker-wind");
+      const data = state.lastData;
+      if (!data || !state.meta || !insideGrid(picker.lat, picker.lon)) {
+        valueNode.textContent = "Forecast";
+        windNode.replaceChildren();
         return;
       }
-      const plan = buildPlan(state.meta.grid, new Float64Array([lat]), new Float64Array([lng]));
+      const level = els.level.value;
+      const plan = buildPlan(state.meta.grid, new Float64Array([picker.lat]), new Float64Array([picker.lon]));
       const at = (field, nearest = false) => (data[field] ? applyPlan(plan, data[field], undefined, nearest)[0] : NaN);
-      const degrees = (value) => (options.getUnit?.() === "F" ? `${Math.round((value * 9) / 5 + 32)}°F` : `${Math.round(value)}°C`);
-      const lines = [];
-      const temp = at(tempField);
-      if (!Number.isNaN(temp)) lines.push(`Temperature ${level === "10" ? "" : `at ${WIND_LEVELS[level].short} `}${degrees(temp)}`);
-      const humidity = at(humidityField);
-      if (!Number.isNaN(humidity)) lines.push(`Humidity ${level === "10" ? "" : `at ${WIND_LEVELS[level].short} `}${Math.round(humidity)}%`);
-      const dew = at("dew");
-      if (!Number.isNaN(dew)) lines.push(`Dew point ${degrees(dew)}`);
-      const u = at(`u${level}`);
-      const v = at(`v${level}`);
-      if (!Number.isNaN(u) && !Number.isNaN(v)) {
-        // Meteorological direction is where the wind blows from.
-        const from = (Math.atan2(-u, -v) * 180) / Math.PI;
-        const compass = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(((from + 360) % 360) / 45) % 8];
-        lines.push(`Wind ${level === "10" ? "" : `at ${WIND_LEVELS[level].short} `}${Math.round(Math.hypot(u, v) * 3.6)} km/h from ${compass}`);
+      const [uField, vField] = windFields();
+      const u = at(uField);
+      const v = at(vField);
+      const speed = Math.hypot(u, v) * 3.6;
+      const layer = hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
+      let reading = "";
+      if (layer && !layer.field) {
+        reading = Number.isNaN(speed) ? "—" : `${Math.round(speed)} km/h`;
+      } else if (layer?.categories) {
+        const category = layer.categories.find(([value]) => value === Math.round(at(layer.field, true)));
+        reading = category ? category[1] : state.layer === "storm" ? "No storms" : "Dry";
+      } else if (layer) {
+        let value = at(layerField(layer, level));
+        if (layer.convert) value = layer.convert(value);
+        if (Number.isNaN(value)) reading = "—";
+        else if (layer.unit === "°C") reading = options.getUnit?.() === "F" ? `${Math.round((value * 9) / 5 + 32)}°F` : `${Math.round(value)}°C`;
+        else if (state.layer === "freezing") reading = value < 50 ? "At ground" : `${(Math.round(value / 50) * 50).toLocaleString()} m`;
+        else reading = `${value < 10 && /mm|cm/.test(layer.unit) ? value.toFixed(1) : Math.round(value).toLocaleString()} ${shortUnit(layer)}`;
       }
-      const gust = at("gust");
-      if (!Number.isNaN(gust)) lines.push(`Gusts ${Math.round(gust * 3.6)} km/h`);
-      const rain = at("precip");
-      if (!Number.isNaN(rain)) lines.push(`Rain ${rain.toFixed(1)} mm/h`);
-      const type = LAYERS.ptype.categories.find(([value]) => value === Math.round(at("ptype", true)));
-      if (type) lines.push(`Falling as ${type[1].toLowerCase()}`);
-      const vapour = at("tcwv");
-      if (!Number.isNaN(vapour)) lines.push(`Water vapour ${Math.round(vapour)} mm`);
-      const cloud = at("cloud");
-      if (!Number.isNaN(cloud)) lines.push(`Clouds ${Math.round(cloud)}%`);
-      const pressure = at("pressure");
-      if (!Number.isNaN(pressure)) lines.push(`Pressure ${Math.round(pressure)} hPa`);
-      const storm = LAYERS.storm.categories.find(([value]) => value === Math.round(at("storm", true)));
-      if (storm) lines.push(storm[0] === 5 ? "Thunderstorm with hail" : storm[0] === 3 ? "Thunderstorms" : `${storm[1]} thunderstorm${storm[0] === 1 ? "" : "s"}`);
-      const cape = at("cape");
-      if (!Number.isNaN(cape)) lines.push(`Thunderstorm energy (CAPE) ${Math.round(cape)} J/kg`);
-      const freezing = at("freezing");
-      // The pipeline reports 0 where it is already freezing at the surface.
-      if (!Number.isNaN(freezing)) lines.push(freezing < 50 ? "Freezing level: at the ground" : `Freezing level ${(Math.round(freezing / 50) * 50).toLocaleString()} m`);
-      const snow = at("snowdepth");
-      if (snow >= 1) lines.push(`Snow depth ${Math.round(snow)} cm`);
-      if (!lines.length) return;
-      const content = document.createElement("div");
-      const title = document.createElement("div");
-      title.className = "popup-title";
-      title.textContent = `Forecast · ${formatTime(currentTime() * 1000)}`;
-      const meta = document.createElement("div");
-      meta.className = "popup-meta";
-      lines.forEach((line, index) => {
-        if (index) meta.append(document.createElement("br"));
-        meta.append(line);
-      });
-      content.append(title, meta);
-      L.popup({ maxWidth: 260 }).setLatLng(event.latlng).setContent(content).openOn(map);
+      valueNode.textContent = reading || "Forecast";
+      windNode.replaceChildren();
+      // With the wind layer the speed is already the main value; otherwise wind is the second line.
+      if (!Number.isNaN(speed) && (!layer || layer.field)) {
+        const arrow = document.createElement("span");
+        arrow.className = "picker-arrow";
+        arrow.textContent = "↑";
+        // The arrow points where the wind blows to.
+        arrow.style.transform = `rotate(${(Math.atan2(u, v) * 180) / Math.PI}deg)`;
+        windNode.append(arrow, `${Math.round(speed)} km/h`);
+      }
     }
 
     function setStatus(message) {

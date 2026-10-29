@@ -15,6 +15,14 @@
   let mapsVisible = false;
   let healthVisible = false;
 
+  // Embedded in the WAPK app (?embed=1): only the map, filling the screen, like the Windy embed it replaces.
+  const embedded = new URLSearchParams(window.location.search).get('embed') === '1';
+  if (embedded) {
+    document.documentElement.classList.add('is-embed');
+    if (window.location.hash !== `#${MAPS_HASH}`) history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${MAPS_HASH}`);
+    byId('mapBrand')?.addEventListener('click', (event) => event.preventDefault());
+  }
+
   const radar = () => window.AtmosRadar;
   const currentPlace = () => window.Atmos?.place;
   const currentTheme = () => window.Atmos?.theme || document.documentElement.dataset.theme;
@@ -99,7 +107,7 @@
   }
 
   function route() {
-    const hash = decodeURIComponent(window.location.hash.slice(1));
+    const hash = embedded ? MAPS_HASH : decodeURIComponent(window.location.hash.slice(1));
     if (hash === MAPS_HASH) showMaps(); else if (hash === HEALTH_HASH) showHealth(); else showOverview(hash);
     markNavigation(hash);
   }

@@ -45,7 +45,69 @@
 .map-corner, .map-rail, .map-legend, .map-timeline, .map-panel { position: absolute; z-index: 10; }
 .map-chip, .map-rail, .map-legend, .map-timeline, .map-panel { background: var(--map-glass); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 10px 28px #00112a40; backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%); }
 
-.map-corner-left { top: 12px; left: 12px; display: flex; gap: 8px; }
+/* Top bar: logo, settings and fullscreen, with the location search under them (like Windy). */
+.map-corner-left { top: 12px; left: 12px; display: grid; grid-template-columns: auto auto auto; justify-content: start; align-items: center; gap: 8px; }
+.map-brand, .map-search, .map-layers-button { background: var(--map-glass); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 10px 28px #00112a40; backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%); }
+.map-brand { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 13px 0 6px; border-radius: 12px; color: var(--ink); text-decoration: none; font: 700 14px/1 'DM Sans', sans-serif; letter-spacing: -.01em; white-space: nowrap; }
+.map-brand img { width: 44px; height: 32px; object-fit: contain; }
+.map-brand b { color: #22a565; }
+.map-search { grid-column: 1 / -1; position: relative; display: flex; align-items: center; gap: 7px; width: 300px; height: 38px; padding: 0 10px; border-radius: 12px; }
+.map-search > svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.map-search input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--ink); font: 500 13px 'DM Sans', sans-serif; outline: none; }
+.map-search input::-webkit-search-cancel-button { filter: grayscale(1); }
+.map-search:focus-within { border-color: var(--accent); }
+.map-search-results { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; display: grid; gap: 1px; max-height: 300px; overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--popover); box-shadow: 0 14px 34px #00112a55; }
+.map-search-results[hidden] { display: none; }
+.map-search-option { display: grid; gap: 1px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; font: 600 13px 'DM Sans', sans-serif; cursor: pointer; }
+.map-search-option span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.map-search-option:hover, .map-search-option.is-active { background: var(--hover); }
+.map-search-empty { margin: 0; padding: 8px 10px; color: var(--muted); font-size: 12px; }
+.map-layers-button { display: none; position: absolute; z-index: 12; top: 56px; right: 8px; place-items: center; width: 44px; height: 44px; border-radius: 50%; cursor: pointer; }
+.map-layers-button svg { width: 20px; height: 20px; }
+.map-layers-button[aria-expanded='true'] { color: #fff; background: var(--map-active); border-color: transparent; }
+
+/* Picker: a pin with a bubble showing the chosen layer and the wind at that point. */
+.map-picker { width: 0 !important; height: 0 !important; }
+.picker-dot { position: absolute; left: -8px; top: -8px; width: 16px; height: 16px; box-sizing: border-box; border: 4px solid #1f7fd8; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px #000a; cursor: grab; }
+.picker-bubble { position: absolute; left: 0; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 11px; border: 0; border-radius: 10px; background: #0d2342f0; color: #fff; font: 700 13px/1.1 'DM Sans', sans-serif; white-space: nowrap; box-shadow: 0 6px 18px #0008; cursor: pointer; }
+.picker-bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; margin-left: -6px; border: 6px solid transparent; border-top-color: #0d2342f0; border-bottom: 0; }
+.picker-wind { display: inline-flex; align-items: center; gap: 3px; color: #bcd9ff; font-size: 12px; font-weight: 500; }
+.picker-wind:empty { display: none; }
+.picker-arrow { display: inline-block; font-weight: 700; color: #7cc4ff; }
+.picker-more { margin-left: -2px; color: #7cc4ff; font-size: 17px; line-height: 1; }
+
+/* Point forecast: 7 days in 3-hour columns along the bottom of the map. */
+.map-detail { position: absolute; z-index: 15; left: 12px; right: 172px; bottom: 80px; max-height: 48%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--map-glass); color: var(--ink); box-shadow: 0 10px 28px #00112a50; backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+.map-detail[hidden] { display: none; }
+.map-stage.has-detail .map-legend { display: none; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 8px 4px 14px; }
+.detail-titles { min-width: 0; }
+.detail-name { display: block; overflow: hidden; font-size: 14px; white-space: nowrap; text-overflow: ellipsis; }
+.detail-meta { display: block; color: var(--muted); font-size: 11px; }
+.detail-close { flex: none; width: 30px; height: 30px; }
+.detail-scroll { overflow: auto hidden; padding-bottom: 4px; scrollbar-width: thin; }
+.detail-status { margin: 0; padding: 16px 14px; color: var(--muted); font-size: 12px; }
+.detail-table { border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.detail-table th.detail-label { position: sticky; left: 0; z-index: 1; padding: 2px 8px; background: linear-gradient(var(--popover), var(--popover)), var(--fallback); color: var(--muted); font-size: 10.5px; font-weight: 500; text-align: left; white-space: nowrap; }
+.detail-table td { min-width: 40px; padding: 2px; text-align: center; cursor: pointer; }
+.detail-day { padding: 3px 6px; border-left: 1px solid var(--line); font-size: 11.5px; text-align: left; white-space: nowrap; }
+.detail-day-range { margin-left: 6px; color: var(--muted); font-weight: 500; }
+.detail-hour { color: var(--muted); font-size: 11px; }
+.detail-icon svg { display: block; width: 32px; height: 32px; margin: auto; }
+.detail-temp { font-weight: 700; color: hsl(calc(215 - var(--heat, .5) * 215) 85% 68%); }
+.detail-rain-cell { border-radius: 4px; color: #a9d0ff; background: rgb(60 130 255 / calc(var(--rain, 0) * 45%)); }
+.detail-wind-value { display: inline-flex; align-items: center; gap: 2px; }
+.detail-arrow { display: inline-block; color: var(--accent); font-weight: 700; }
+.detail-gust-cell { color: var(--muted); }
+.detail-table td.is-current { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 16%, transparent); }
+.detail-table tr:first-of-type + tr td.is-current { color: var(--ink); font-weight: 700; }
+.detail-note { margin: 0; padding: 2px 14px 8px; color: var(--muted); font-size: 10px; }
+
+/* Embedded in the WAPK app: only the map, filling the screen. */
+.is-embed body { overflow: hidden; }
+.is-embed .sidebar, .is-embed .topbar, .is-embed .mobile-nav, .is-embed #mapsView > :not(#radarMapStage), .is-embed #radarFullscreenButton { display: none !important; }
+.is-embed .app-shell { z-index: 500; }
+.is-embed .map-stage { position: fixed; inset: 0; z-index: 400; height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
 .map-chip { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px; border-radius: 10px; font: 600 12px 'DM Sans', sans-serif; }
 .map-chip:hover { background: var(--popover); }
 .map-chip svg { width: 16px; height: 16px; color: var(--accent); }
@@ -124,7 +186,7 @@
 .radar-map .leaflet-control-attribution a { color: var(--accent); }
 
 /* Settings panel */
-.map-panel { top: 58px; left: 12px; bottom: 82px; z-index: 20; width: min(340px, calc(100% - 24px)); overflow-y: auto; padding: 4px 14px 12px; border-radius: 14px; scrollbar-width: thin; }
+.map-panel { top: 104px; left: 12px; bottom: 82px; z-index: 20; width: min(340px, calc(100% - 24px)); overflow-y: auto; padding: 4px 14px 12px; border-radius: 14px; scrollbar-width: thin; }
 .map-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0 6px; }
 .map-panel-head h2 { font-size: 15px; font-weight: 650; }
 .radar-control-group { border-top: 1px solid var(--line); }
@@ -267,25 +329,35 @@
   .lightning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
-  .map-stage { height: clamp(460px, 76vh, 720px); }
-  /* On phones the layer rail becomes a scrollable strip above the timeline. */
-  /* Leaves room between the strip and the timeline for the time bubble above the slider. */
-  .map-rail { top: auto; left: 8px; right: 8px; bottom: 104px; width: auto; max-height: none; flex-direction: row; overflow-x: auto; overflow-y: hidden; gap: 4px; padding: 5px; }
-  .rail-group { display: flex; gap: 3px; padding: 0 0 0 5px; border-top: 0; border-left: 1px solid var(--line); }
-  .rail-item { flex: none; flex-direction: column; justify-content: center; gap: 3px; width: auto; min-width: 58px; min-height: 48px; padding: 5px 6px; font-size: 10.5px; text-align: center; }
-  .rail-select { display: flex; align-items: center; }
-  .rail-select select { width: 92px; }
-  .rail-type { margin: 0; }
-  .rail-type select { width: 128px; }
-  .rail-fires-window { margin: 0; }
-  .rail-fires-window select { width: 116px; }
-  .map-legend { top: 56px; bottom: auto; left: 8px; width: min(300px, calc(100% - 16px)); }
-  .map-timeline { left: 8px; right: 8px; bottom: 8px; height: 56px; padding-right: 14px; }
-  .map-corner-left { top: 8px; left: 8px; }
-  .map-satbar { top: 52px; left: 8px; right: 8px; transform: none; width: auto; min-width: 0; padding-right: 10px; }
-  .map-stage:has(.map-satbar:not([hidden])) .map-legend { top: 100px; }
+  /* Phones get a full-screen map like Windy: logo and search on top, a Layers button, the timeline at the
+     bottom. The logo leads back to the weather. */
+  body.view-maps { overflow: hidden; }
+  body.view-maps .app-shell { z-index: 500; }
+  .view-maps .map-stage { position: fixed; inset: 0; z-index: 400; height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
+  .map-corner-left { top: 8px; left: 8px; right: 8px; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; }
+  .map-brand { grid-row: 1; grid-column: 1; height: 40px; padding: 0 6px; }
+  .map-brand-text { display: none; }
+  .map-brand img { width: 40px; height: 29px; }
+  .map-search { grid-column: 2; grid-row: 1; width: auto; height: 40px; }
+  .map-corner-left #mapPanelButton { grid-row: 1; grid-column: 3; width: 40px; height: 40px; }
+  #radarFullscreenButton { display: none; }
+  .map-layers-button { display: grid; }
+  /* The layer list opens as a sheet under the Layers button. */
+  .map-rail { display: none; top: 108px; right: 8px; bottom: 72px; width: 176px; max-height: none; }
+  .map-stage.is-rail-open .map-rail { display: flex; }
+  .map-legend { top: auto; bottom: 94px; left: 8px; width: min(196px, calc(100% - 16px)); gap: 2px; padding: 5px 9px 3px; }
+  .map-legend-title { font-size: 10px; }
+  .map-legend-bar { height: 6px; }
+  .map-legend-ticks { height: 12px; font-size: 9px; }
+  .map-legend-categories { font-size: 10px; gap: 2px 8px; }
+  .map-timeline { left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); height: 50px; gap: 10px; padding-right: 14px; }
+  .timeline-play { width: 36px; height: 36px; }
+  .timeline-bubble { top: -34px; font-size: 11px; }
+  .map-satbar { top: 56px; left: 8px; right: 60px; transform: none; width: auto; min-width: 0; padding-right: 10px; }
+  .map-detail { left: 8px; right: 8px; bottom: 66px; max-height: 54%; }
   .map-panel { inset: 0; width: 100%; border-radius: 0; z-index: 30; }
-  .map-stage .leaflet-bottom { bottom: 168px; }
+  .map-stage .leaflet-bottom { bottom: 92px; }
+  .radar-map .leaflet-control-attribution { max-width: 44vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 8.5px; }
   .map-stage .leaflet-control-zoom { display: none; }
   .lightning-grid { grid-template-columns: minmax(0, 1fr); }
 }
@@ -304,6 +376,3 @@
   .strike-ring { animation: none !important; transform: translate(-50%, -50%) !important; }
 }
 
-@media (max-width: 760px) {
-  .rail-note { flex: none; align-self: center; margin: 0; max-width: 150px; }
-}

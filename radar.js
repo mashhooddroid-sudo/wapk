@@ -39,6 +39,11 @@
   const LEAFLET_BASE = "https://unpkg.com/leaflet@1.9.4/dist/";
 
   const els = {
+    stage: document.getElementById("radarMapStage"),
+    layersButton: document.getElementById("mapLayersButton"),
+    mapSearchForm: document.getElementById("mapSearchForm"),
+    mapSearchInput: document.getElementById("mapSearchInput"),
+    mapSearchResults: document.getElementById("mapSearchResults"),
     alertCard: document.getElementById("radarAlertCard"),
     alertList: document.getElementById("radarAlertList"),
     alertText: document.getElementById("radarAlertText"),
@@ -322,6 +327,8 @@
     if (!state.initialized || !state.visible || !state.pendingPlace) return;
     setTarget(state.pendingPlace, false);
     state.map.setView([state.pendingPlace.lat, state.pendingPlace.lon], 8, { animate: false });
+    // The picker starts on the dashboard's place (the visitor's location on first visit).
+    state.forecast?.setPicker(state.pendingPlace.lat, state.pendingPlace.lon);
     state.pendingPlace = null;
   }
 
@@ -376,6 +383,12 @@
       url: FORECAST_DATA_URL,
       theme: state.theme,
       getUnit: () => window.Atmos?.unit,
+      // Windy-style picker: its bubble opens the point forecast, which follows the picker and the map's time.
+      onPickerOpen: (lat, lon) => state.pointForecast?.open(lat, lon),
+      onPickerMoved: (lat, lon) => {
+        if (state.pointForecast?.isOpen()) state.pointForecast.open(lat, lon);
+      },
+      onTimeChange: (ms) => state.pointForecast?.setTime(ms),
       // Choosing a forecast layer hides satellite and radar; they can be turned back on by hand.
       onLayerChosen: () => {
         if (els.satelliteToggle.checked) {
@@ -388,6 +401,18 @@
         }
       },
     }) || null;
+    state.pointForecast = window.WapkPointForecast?.attach(els.stage, {
+      onTimeSelect: (ms) => state.forecast?.setTimeTo(ms),
+    }) || null;
+    // Searching a place moves the map and picker there and opens its forecast.
+    window.WapkPointForecast?.attachSearch(els.mapSearchForm, els.mapSearchInput, els.mapSearchResults, (lat, lon, label) => {
+      state.map.flyTo([lat, lon], Math.max(state.map.getZoom(), 7), { duration: 0.7 });
+      state.forecast?.setPicker(lat, lon);
+      state.pointForecast?.open(lat, lon, label);
+    });
+    // On phones the layer list is a sheet opened from the round Layers button; tapping the map closes it.
+    els.layersButton.addEventListener("click", () => setLayersOpen(!els.stage.classList.contains("is-rail-open")));
+    state.map.on("click", () => setLayersOpen(false));
     state.targetLayer = L.layerGroup().addTo(state.map);
     setTileLayer(els.mapTheme.value || "auto");
     observeMapSize();
@@ -900,6 +925,11 @@
 
   function setWeatherStatus(message) {
     els.weatherLayerStatus.textContent = message;
+  }
+
+  function setLayersOpen(open) {
+    els.stage.classList.toggle("is-rail-open", open);
+    els.layersButton.setAttribute("aria-expanded", String(open));
   }
 
   function observeMapSize() {
