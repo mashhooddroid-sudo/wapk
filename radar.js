@@ -18,27 +18,6 @@
   const MAP_MARKER_LIMIT = 1_500;
   const PMD_RADAR_REFRESH_MS = 5 * 60 * 1000;
   const FIRES_REFRESH_MS = 30 * 60 * 1000;
-  // Zoomed in, the chosen satellite image is drawn from EUMETSAT's own map tiles at full resolution instead of
-  // the worker's one picture of the whole area (about 4.6 km per pixel). Playback keeps the stored pictures.
-  const EUMETSAT_WMS = "https://view.eumetsat.int/geoserver/msg_iodc/ows";
-  const SATELLITE_TILES_FROM_ZOOM = 5;
-  // Zoom 6 tiles (512 px) are about the satellite's own resolution over Pakistan (3–4 km); closer in, those
-  // tiles are enlarged smoothly instead of fetching blocky over-resolved ones.
-  const SATELLITE_TILES_NATIVE_ZOOM = 6;
-  const SATELLITE_WMS_LAYERS = {
-    ir108: { layers: "msg_iodc:ir108", format: "image/jpeg" },
-    vis006: { layers: "msg_iodc:vis006", format: "image/jpeg" },
-    wv062: { layers: "msg_iodc:wv062", format: "image/jpeg" },
-    natural: { layers: "msg_iodc:rgb_natural", format: "image/jpeg" },
-    airmass: { layers: "msg_iodc:rgb_airmass", format: "image/jpeg" },
-    dust: { layers: "msg_iodc:rgb_dust", format: "image/jpeg" },
-    convection: { layers: "msg_iodc:rgb_convection", format: "image/jpeg" },
-    rain: { layers: "msg_iodc:h63", styles: "msg_h60b_h63", format: "image/png", transparent: true },
-  };
-  // EUMETSAT publishes plain reflectance, which looks dark and flat. Like Windy, the visible image is stretched
-  // and brightened (gamma); daylight colour images get a gentler boost. The SVG filters are
-  // in index.html; radar.css applies them to the images (the pane itself has no size, which would clip them).
-  const SATELLITE_ENHANCE = { vis006: "visible", natural: "colour", convection: "colour" };
   const FIRES_VISIBLE_KEY = "wapk.firesVisible";
   const FIRES_HOURS_KEY = "wapk.firesHours";
   const FIRE_WINDOWS_HOURS = [24, 48, 72];
@@ -549,10 +528,6 @@
     });
 
     els.satellitePlay.addEventListener("click", () => (state.satellitePlayTimer ? stopSatellitePlayback() : startSatellitePlayback()));
-    // Zooming in past SATELLITE_TILES_FROM_ZOOM switches the satellite to full-resolution tiles (and back).
-    state.map.on("zoomend", () => {
-      if (els.satelliteToggle.checked && state.satelliteMeta) updateSatelliteTiles(frameOf(currentSatelliteProduct()));
-    });
 
     els.weatherOpacityInput.addEventListener("input", () => {
       updateWeatherOpacity();
@@ -794,7 +769,6 @@
       if (state.satelliteOverlay) state.map.removeLayer(state.satelliteOverlay);
       state.satelliteOverlay = null;
       state.satelliteRequest += 1;
-      updateSatelliteTiles(null);
       setWeatherStatus("Satellite images are off. Turn on Satellite in the layer list.");
       return;
     }
@@ -803,8 +777,6 @@
     // Areas without imagery come back black (night side, space). In dark theme the images are screen-blended,
     // so black disappears into the map and the dark map barely changes the image's own colours.
     pane.style.mixBlendMode = state.theme === "dark" ? "screen" : "normal";
-    pane.dataset.enhance = SATELLITE_ENHANCE[product.id] || "";
-    updateSatelliteTiles(product);
     if (state.satelliteOverlay?._url === product.url) {
       describeSatellite(product);
       return;
@@ -838,45 +810,6 @@
     state.satellitePending = overlay;
     overlay.addTo(state.map);
     if (state.satelliteOverlay) overlay.setOpacity(0);
-  }
-
-  // Full-resolution tiles for the shown image while zoomed in and not playing; the stored picture stays
-  // underneath, so nothing flashes while tiles load.
-  function updateSatelliteTiles(product) {
-    const wms = product && SATELLITE_WMS_LAYERS[product.id];
-    const wanted = wms && product.time && !state.satellitePlayTimer && state.map.getZoom() >= SATELLITE_TILES_FROM_ZOOM;
-    const key = wanted ? `${product.id}|${product.time}` : null;
-    if (state.satelliteTilesKey === key) {
-      state.satelliteTiles?.setOpacity(getWeatherOpacity());
-      return;
-    }
-    const previous = state.satelliteTiles;
-    state.satelliteTiles = null;
-    state.satelliteTilesKey = key;
-    if (!wanted) {
-      if (previous) state.map.removeLayer(previous);
-      return;
-    }
-    const tiles = L.tileLayer.wms(EUMETSAT_WMS, {
-      layers: wms.layers,
-      styles: wms.styles || "",
-      format: wms.format,
-      transparent: Boolean(wms.transparent),
-      version: "1.3.0",
-      time: product.time,
-      pane: "satellite",
-      tileSize: 512,
-      maxNativeZoom: SATELLITE_TILES_NATIVE_ZOOM,
-      opacity: getWeatherOpacity(),
-      bounds: state.satelliteMeta.bounds,
-      className: "satellite-tiles",
-    });
-    // The old tiles go once the new ones cover the view.
-    tiles.once("load", () => {
-      if (previous && state.map.hasLayer(previous)) state.map.removeLayer(previous);
-    });
-    tiles.addTo(state.map);
-    state.satelliteTiles = tiles;
   }
 
   function currentSatelliteProduct() {
@@ -945,12 +878,9 @@
   }
 
   function stopSatellitePlayback() {
-    const wasPlaying = Boolean(state.satellitePlayTimer);
     window.clearInterval(state.satellitePlayTimer);
     state.satellitePlayTimer = null;
     setSatellitePlayIcon(false);
-    // Back to full-resolution tiles for the image left showing.
-    if (wasPlaying && els.satelliteToggle.checked && state.satelliteMeta) updateSatelliteTiles(frameOf(currentSatelliteProduct()));
   }
 
   function setSatellitePlayIcon(playing) {
@@ -975,7 +905,6 @@
     const opacity = getWeatherOpacity();
     state.pmdLayer?.eachLayer((layer) => layer.setOpacity(opacity));
     state.satelliteOverlay?.setOpacity(opacity);
-    state.satelliteTiles?.setOpacity(opacity);
   }
 
   function getWeatherOpacity() {

@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261029-47">
-  <link rel="stylesheet" href="radar.css?v=20261029-44">
+  <link rel="stylesheet" href="radar.css?v=20261029-45">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -154,17 +154,6 @@
       <p id="radarViewStatus" class="radar-view-status" role="status" hidden></p>
 
       <section id="radarMapStage" class="map-stage" aria-label="Interactive weather map">
-        <!-- Satellite enhancement (radar.js SATELLITE_ENHANCE): stretch and brighten. -->
-        <svg class="radar-sr-only" width="0" height="0" aria-hidden="true" focusable="false">
-          <filter id="satEnhanceVisible" color-interpolation-filters="sRGB">
-            <feComponentTransfer><feFuncR type="linear" slope="1.33" intercept="-0.04"/><feFuncG type="linear" slope="1.33" intercept="-0.04"/><feFuncB type="linear" slope="1.33" intercept="-0.04"/></feComponentTransfer>
-            <feComponentTransfer><feFuncR type="gamma" exponent="0.6"/><feFuncG type="gamma" exponent="0.6"/><feFuncB type="gamma" exponent="0.6"/></feComponentTransfer>
-          </filter>
-          <filter id="satEnhanceColour" color-interpolation-filters="sRGB">
-            <feComponentTransfer><feFuncR type="gamma" exponent="0.8" amplitude="1.08"/><feFuncG type="gamma" exponent="0.8" amplitude="1.08"/><feFuncB type="gamma" exponent="0.8" amplitude="1.08"/></feComponentTransfer>
-            <feColorMatrix type="saturate" values="1.2"/>
-          </filter>
-        </svg>
         <div id="radarMap" class="radar-map" role="region" aria-label="Weather map. Use arrow keys to pan and plus or minus to zoom." tabindex="0"></div>
 
         <div class="map-corner map-corner-left">
@@ -278,7 +267,7 @@
   <script src="weather-logic.js?v=20261025-1"></script>
   <script src="app.js?v=20261029-43"></script>
   <script src="forecast.js?v=20261029-42"></script>
-  <script src="radar.js?v=20261029-49"></script>
+  <script src="radar.js?v=20261029-50"></script>
   <script src="pointforecast.js?v=20261029-1"></script>
   <script src="health.js?v=20261028-8"></script>
   <script src="views.js?v=20261029-10"></script>

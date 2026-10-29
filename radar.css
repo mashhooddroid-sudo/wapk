@@ -66,10 +66,6 @@
 .map-layers-button svg { width: 20px; height: 20px; }
 .map-layers-button[aria-expanded='true'] { color: #fff; background: var(--map-active); border-color: transparent; }
 
-/* Satellite enhancement (radar.js SATELLITE_ENHANCE, filters in index.html). */
-.leaflet-satellite-pane[data-enhance='visible'] img { filter: url(#satEnhanceVisible); }
-.leaflet-satellite-pane[data-enhance='colour'] img { filter: url(#satEnhanceColour); }
-
 /* Picker: a pin with a bubble showing the chosen layer and the wind at that point. */
 .map-picker { width: 0 !important; height: 0 !important; }
 .picker-dot { position: absolute; left: -8px; top: -8px; width: 16px; height: 16px; box-sizing: border-box; border: 4px solid #1f7fd8; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px #000a; cursor: grab; }
