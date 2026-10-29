@@ -793,7 +793,10 @@
   function renderSatellite() {
     const pane = state.map.getPane("satellite");
     const styled = els.satelliteToggle.checked && state.satelliteMeta && SATELLITE_STYLES[currentSatelliteProduct().id];
-    renderSatelliteLegend(styled ? currentSatelliteProduct().id : null);
+    // Visible keeps its night-side (infrared) legend while its drawn picture has a night side.
+    const drawn = state.satelliteStyled?._url;
+    const visibleNight = state.satelliteStyledProduct === "vis006" && drawn?.daylight?.some((weight) => weight < 1);
+    renderSatelliteLegend(styled ? (currentSatelliteProduct().id === "vis006" && visibleNight ? "vis006-night" : currentSatelliteProduct().id) : null);
     // Leaving a Windy-style product removes its drawn picture.
     if (!styled && state.satelliteStyled) {
       state.map.removeLayer(state.satelliteStyled);
@@ -914,33 +917,100 @@
   }
 
   // Loads the stored picture and redraws it with the product's colour table; recent pictures are kept for playback.
-  async function styledCanvas(product) {
-    const key = `${product.id}|${product.url}`;
-    if (styledCanvases.has(key)) return styledCanvases.get(key);
+  async function greyLevels(url, width, height) {
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.decoding = "async";
-    image.src = product.url;
+    image.src = url;
     await image.decode();
     const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    canvas.width = width || image.naturalWidth;
+    canvas.height = height || image.naturalHeight;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    context.drawImage(image, 0, 0);
-    const picture = context.getImageData(0, 0, canvas.width, canvas.height);
-    const pixels = picture.data;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
     const grey = new Uint8Array(pixels.length / 4);
-    for (let index = 0; index < grey.length; index += 1) grey[index] = pixels[index * 4 + 1];
+    for (let index = 0; index < grey.length; index += 1) grey[index] = pixels[index * 4 + 1]; // Grey pictures.
+    return { grey, width: canvas.width, height: canvas.height };
+  }
+
+  // The infrared picture of the same moment, for the night side of Visible.
+  function infraredUrlAt(time) {
+    const infrared = state.satelliteMeta?.products.find((item) => item.id === "ir108");
+    if (!infrared?.frames?.includes(time)) return null;
+    return `${infrared.frameUrl}${encodeURIComponent(time)}`;
+  }
+
+  // How much daylight each pixel has (0 night … 1 day), from the sun's height at the picture's time: Visible
+  // fades into infrared between 3° below and 7° above the horizon.
+  function daylightWeights(time, width, height) {
+    const ms = Date.parse(time);
+    const days = (ms - Date.UTC(2000, 0, 1, 12)) / 86_400_000;
+    const radians = Math.PI / 180;
+    const meanAnomaly = (357.529 + 0.98560028 * days) * radians;
+    const meanLongitude = 280.459 + 0.98564736 * days;
+    const longitude = (meanLongitude + 1.915 * Math.sin(meanAnomaly) + 0.02 * Math.sin(2 * meanAnomaly)) * radians;
+    const obliquity = (23.439 - 0.00000036 * days) * radians;
+    const rightAscension = Math.atan2(Math.cos(obliquity) * Math.sin(longitude), Math.cos(longitude)) / radians;
+    const declination = Math.asin(Math.sin(obliquity) * Math.sin(longitude));
+    const siderealHours = 18.697374558 + 24.06570982441908 * days;
+    const [[south, west], [north, east]] = state.satelliteMeta.bounds;
+    const mercator = (value) => Math.log(Math.tan(Math.PI / 4 + (value * Math.PI) / 360));
+    const top = mercator(north);
+    const bottom = mercator(south);
+    const cosHour = new Float32Array(width);
+    for (let x = 0; x < width; x += 1) {
+      const lon = west + ((x + 0.5) / width) * (east - west);
+      cosHour[x] = Math.cos((siderealHours * 15 + lon - rightAscension) * radians);
+    }
+    const low = Math.sin(-3 * radians);
+    const high = Math.sin(7 * radians);
+    const weights = new Float32Array(width * height);
+    for (let y = 0; y < height; y += 1) {
+      const lat = (2 * Math.atan(Math.exp(top - ((y + 0.5) / height) * (top - bottom))) - Math.PI / 2);
+      const a = Math.sin(lat) * Math.sin(declination);
+      const b = Math.cos(lat) * Math.cos(declination);
+      for (let x = 0; x < width; x += 1) {
+        const sunHeight = a + b * cosHour[x];
+        weights[y * width + x] = Math.min(1, Math.max(0, (sunHeight - low) / (high - low)));
+      }
+    }
+    return weights;
+  }
+
+  async function styledCanvas(product) {
+    const key = `${product.id}|${product.url}`;
+    if (styledCanvases.has(key)) return styledCanvases.get(key);
+    const { grey, width, height } = await greyLevels(product.url);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    const picture = context.createImageData(width, height);
+    const pixels = picture.data;
     const table = satelliteTable(product.id);
-    for (let index = 0; index < pixels.length; index += 4) {
-      const entry = pixels[index + 1] * 4; // Grey pictures: any channel is the grey level.
-      pixels[index] = table[entry];
-      pixels[index + 1] = table[entry + 1];
-      pixels[index + 2] = table[entry + 2];
-      pixels[index + 3] = table[entry + 3];
+    // Visible is empty at night: there the infrared picture of the same moment fills in.
+    const infraredUrl = product.id === "vis006" && product.time ? infraredUrlAt(product.time) : null;
+    const night = infraredUrl ? await greyLevels(infraredUrl, width, height).catch(() => null) : null;
+    const weights = night ? daylightWeights(product.time, width, height) : null;
+    const irTable = night ? satelliteTable("ir108") : null;
+    for (let index = 0; index < grey.length; index += 1) {
+      const entry = grey[index] * 4;
+      const out = index * 4;
+      if (!night || weights[index] >= 1) {
+        pixels[out] = table[entry];
+        pixels[out + 1] = table[entry + 1];
+        pixels[out + 2] = table[entry + 2];
+        pixels[out + 3] = table[entry + 3];
+        continue;
+      }
+      const day = weights[index];
+      const irEntry = night.grey[index] * 4;
+      for (let channel = 0; channel < 4; channel += 1) pixels[out + channel] = table[entry + channel] * day + irTable[irEntry + channel] * (1 - day);
     }
     context.putImageData(picture, 0, 0);
-    canvas.grey = grey;
+    canvas.grey = product.id === "ir108" ? grey : night?.grey || null;
+    canvas.daylight = weights;
     styledCanvases.set(key, canvas);
     if (styledCanvases.size > STYLED_CACHE) styledCanvases.delete(styledCanvases.keys().next().value);
     return canvas;
@@ -986,6 +1056,8 @@
       state.satelliteStyledKey = key;
       state.satelliteStyledProduct = product.id;
       describeSatellite(product);
+      // Visible's night side is infrared, so its legend applies there.
+      renderSatelliteLegend(product.id === "vis006" && canvas.daylight && canvas.daylight.some((weight) => weight < 1) ? "vis006-night" : product.id);
       state.forecast?.refreshPicker();
     } catch {
       if (request === state.satelliteRequest) setWeatherStatus(`The ${product.label.toLowerCase()} image is not available right now.`);
@@ -998,7 +1070,7 @@
   const IR_LEGEND = { warm: 2, cold: -76, ticks: [0, -20, -40, -50, -60, -70] };
   function renderSatelliteLegend(id) {
     const legend = els.satelliteLegend;
-    if (id !== "ir108") {
+    if (id !== "ir108" && id !== "vis006-night") {
       legend.hidden = true;
       return;
     }
@@ -1026,18 +1098,23 @@
       });
       legend.append(title, bar, ticks);
     }
+    legend.querySelector(".map-legend-title").textContent = id === "vis006-night"
+      ? "Night side (infrared): cloud-top temperature (°C)"
+      : "Cloud-top temperature (°C) · colder is higher";
     legend.hidden = false;
   }
 
   // Temperature under the picker from the shown infrared picture (Web Mercator, like the map).
   function satelliteReading(lat, lon) {
     const canvas = state.satelliteStyled?._url;
-    if (!canvas?.grey || state.satelliteStyledProduct !== "ir108" || !els.satelliteToggle.checked) return null;
+    // Infrared, or Visible's infrared night side.
+    if (!canvas?.grey || !els.satelliteToggle.checked) return null;
     const [[south, west], [north, east]] = state.satelliteMeta.bounds;
     const mercator = (value) => Math.log(Math.tan(Math.PI / 4 + (value * Math.PI) / 360));
     const x = Math.floor(((lon - west) / (east - west)) * canvas.width);
     const y = Math.floor(((mercator(north) - mercator(lat)) / (mercator(north) - mercator(south))) * canvas.height);
     if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return null;
+    if (canvas.daylight && canvas.daylight[y * canvas.width + x] >= 1) return null;
     const celsius = irCelsius(canvas.grey[y * canvas.width + x]);
     const value = window.Atmos?.unit === "F" ? `${Math.round((celsius * 9) / 5 + 32)}°F` : `${Math.round(celsius)}°C`;
     return { value, detail: celsius < 2 ? "Cloud top" : "Ground, no cloud" };
