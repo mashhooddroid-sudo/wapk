@@ -793,10 +793,7 @@
   function renderSatellite() {
     const pane = state.map.getPane("satellite");
     const styled = els.satelliteToggle.checked && state.satelliteMeta && SATELLITE_STYLES[currentSatelliteProduct().id];
-    // Visible keeps its night-side (infrared) legend while its drawn picture has a night side.
-    const drawn = state.satelliteStyled?._url;
-    const visibleNight = state.satelliteStyledProduct === "vis006" && drawn?.daylight?.some((weight) => weight < 1);
-    renderSatelliteLegend(styled ? (currentSatelliteProduct().id === "vis006" && visibleNight ? "vis006-night" : currentSatelliteProduct().id) : null);
+    renderSatelliteLegend(styled ? currentSatelliteProduct().id : null);
     // Leaving a Windy-style product removes its drawn picture.
     if (!styled && state.satelliteStyled) {
       state.map.removeLayer(state.satelliteStyled);
@@ -896,6 +893,14 @@
       }
       return [...IR_COLD_STOPS[IR_COLD_STOPS.length - 1][1], 255];
     },
+    // Visible's night side: infrared clouds in white and grey only (temperature colours are for Infrared itself).
+    irPlain: (grey) => {
+      const celsius = irCelsius(grey);
+      if (celsius >= 2) return [0, 0, 0, 0];
+      const f = Math.min(1, (2 - celsius) / 44);
+      const level = Math.round(170 + 85 * f);
+      return [level, level, Math.min(255, level + 6), Math.round(255 * Math.min(1, 0.05 + 0.95 * f ** 1.1))];
+    },
     vis006: (grey) => {
       const value = Math.min(1, Math.max(0, (grey - 6) / 190)) ** 0.6;
       const level = Math.round(255 * value);
@@ -993,7 +998,7 @@
     const infraredUrl = product.id === "vis006" && product.time ? infraredUrlAt(product.time) : null;
     const night = infraredUrl ? await greyLevels(infraredUrl, width, height).catch(() => null) : null;
     const weights = night ? daylightWeights(product.time, width, height) : null;
-    const irTable = night ? satelliteTable("ir108") : null;
+    const irTable = night ? satelliteTable("irPlain") : null;
     for (let index = 0; index < grey.length; index += 1) {
       const entry = grey[index] * 4;
       const out = index * 4;
@@ -1056,8 +1061,7 @@
       state.satelliteStyledKey = key;
       state.satelliteStyledProduct = product.id;
       describeSatellite(product);
-      // Visible's night side is infrared, so its legend applies there.
-      renderSatelliteLegend(product.id === "vis006" && canvas.daylight && canvas.daylight.some((weight) => weight < 1) ? "vis006-night" : product.id);
+      renderSatelliteLegend(product.id);
       state.forecast?.refreshPicker();
     } catch {
       if (request === state.satelliteRequest) setWeatherStatus(`The ${product.label.toLowerCase()} image is not available right now.`);
@@ -1070,7 +1074,7 @@
   const IR_LEGEND = { warm: 2, cold: -76, ticks: [0, -20, -40, -50, -60, -70] };
   function renderSatelliteLegend(id) {
     const legend = els.satelliteLegend;
-    if (id !== "ir108" && id !== "vis006-night") {
+    if (id !== "ir108") {
       legend.hidden = true;
       return;
     }
@@ -1098,9 +1102,6 @@
       });
       legend.append(title, bar, ticks);
     }
-    legend.querySelector(".map-legend-title").textContent = id === "vis006-night"
-      ? "Night side (infrared): cloud-top temperature (°C)"
-      : "Cloud-top temperature (°C) · colder is higher";
     legend.hidden = false;
   }
 
