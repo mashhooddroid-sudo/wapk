@@ -126,6 +126,8 @@ Make a new one the same way and paste it into the secret.
 | `app.js` | Overview / Hourly / Week: fetches the forecast, METAR, air quality, city search; draws everything. |
 | `weather-logic.js` | Thunderstorm, hail and fog rules ported from your Flutter app. |
 | `health.js` | Health section: alerts, air quality, PMD pollen, seasonal disease risks, heat/cold/UV. |
+| `pointforecast.js` | Map picker's point forecast panel (7 days, 3-hour columns) and the map's location search. |
+| `wapk-logo.png` | Weather Alert PK logo icon for the map's top bar (cut from the Flutter app's `assets/images/logo.png`). |
 | `borders.json` | Country borders, coastlines and Pakistan's provinces for the map (≈ 465 KB, ≈ 167 KB compressed). Built by `pipeline/build_borders.py`. |
 | `pipeline/build_borders.py` | Makes `borders.json` from Natural Earth 1:10m data (Pakistan point of view), cropped and simplified. |
 | `icons.js` | All the drawn icons (weather icons and small UI icons). |
@@ -148,8 +150,8 @@ Make a new one the same way and paste it into the secret.
 - **Hosting:** Cloudflare Pages project **`wapk`**, account mashhood.droid.
 - **Address:** https://wapk.pages.dev
 - **Type:** static files only. No build step, no framework. Leaflet 1.9.4 for the map.
-- **The twelve files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
-  styles.css, radar.css, weather-logic.js, health.js, borders.json`. **Nothing else.**
+- **The fourteen files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
+  styles.css, radar.css, weather-logic.js, health.js, borders.json, pointforecast.js, wapk-logo.png`. **Nothing else.**
 
 ### Screens
 
@@ -855,9 +857,9 @@ place labels (390) → Leaflet overlays (400) → fires (410) → markers.
 # 1. Check the account
 npx wrangler whoami          # must say Mashhood.droid@gmail.com's Account
 
-# 2. Copy ONLY the twelve site files into an empty folder (never deploy the project folder itself)
+# 2. Copy ONLY the fourteen site files into an empty folder (never deploy the project folder itself)
 mkdir C:\temp\wapk-dist
-copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js borders.json C:\temp\wapk-dist\
+copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js borders.json pointforecast.js wapk-logo.png C:\temp\wapk-dist\
 
 # 3. Deploy
 npx wrangler pages deploy C:\temp\wapk-dist --project-name wapk --branch main
@@ -965,7 +967,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 
 ## 20. Rules and gotchas to never forget
 
-1. **Deploy only the twelve site files**, never the whole project folder (`.openai/` and `test.txt` are private).
+1. **Deploy only the fourteen site files**, never the whole project folder (`.openai/` and `test.txt` are private).
 2. **Always check `npx wrangler whoami`** shows mashhood.droid before deploying.
 3. **Bump `?v=`** in `index.html` for every changed JS/CSS file.
 4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
@@ -1026,3 +1028,16 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 | **CORS** | Browser rule that decides which sites may read data from another site |
 | **Leaflet** | The JavaScript map library |
 | **Web Mercator** | The map projection used by web maps |
+
+## Map: picker, point forecast, phone layout and app embed (29 Oct 2026)
+
+- **Picker:** a draggable pin; its bubble shows the active layer's value and the wind at that point for the map's
+  time and updates while dragging. Clicking the map moves it. Tapping the bubble opens the **point forecast**:
+  7 days in 3-hour columns (icon, temperature, rain, wind, gusts) from `window.Atmos.fetchForecast` (ECMWF IFS via
+  Open-Meteo, with the WAPK storm/hail rules). Tapping a column moves the map's time.
+- **Top bar:** logo (links back to the weather) and a location search (Open-Meteo geocoding).
+- **Start location:** the first visit asks for the visitor's location; later visits use it again if allowed.
+  `?lat=…&lon=…` (optionally `&name=`) opens a given place.
+- **Phones (≤ 760 px):** the map fills the screen; layers open from the round Layers button.
+- **Embed for the WAPK app:** `https://wapk.pages.dev/?embed=1&lat=<lat>&lon=<lon>#mapsView` shows only the map.
+  The Flutter app's map tab (`lib/screens/home_screen.dart`, `_updateWindy`) loads this instead of Windy.
