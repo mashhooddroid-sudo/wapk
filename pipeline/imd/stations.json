@@ -1,0 +1,952 @@
+[
+{
+"id": "Bhopal",
+"name": "Bhopal",
+"lat": 23.2599,
+"lon": 77.4126,
+"files": [
+"caz_bhp.gif",
+"pac_bhp.gif",
+"ppi_bhp.gif",
+"ppz_bhp.gif",
+"sri_bhp.gif"
+],
+"code": "bhp",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Agartala",
+"name": "Agartala",
+"lat": 23.8315,
+"lon": 91.2868,
+"files": [
+"caz_agt.gif",
+"pac_agt.gif",
+"ppi_agt.gif",
+"ppz_agt.gif",
+"sri_agt.gif"
+],
+"code": "agt",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Ayanagar",
+"name": "Delhi-Ayanagar",
+"lat": 28.483333,
+"lon": 77.125,
+"files": [
+"caz_aya.gif",
+"pac_aya.gif",
+"ppi_aya.gif",
+"ppz_aya.gif",
+"sri_aya.gif"
+],
+"code": "aya",
+"size": [
+1278,
+1048
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Delhi",
+"name": "Delhi-HQ",
+"lat": 25.90278,
+"lon": 93.70306,
+"files": [
+"caz_delhi.gif",
+"pac_delhi.gif",
+"ppi_delhi.gif",
+"ppz_delhi.gif",
+"sri_delhi.gif"
+],
+"code": "delhi",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Dimapur",
+"name": "Dimapur",
+"lat": 25.90278,
+"lon": 93.70306,
+"files": [
+"caz_dmu.gif",
+"pac_dmu.gif",
+"ppi_dmu.gif",
+"ppz_dmu.gif",
+"sri_dmu.gif"
+],
+"code": "dmu",
+"size": [
+940,
+940
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Bhuj",
+"name": "Bhuj",
+"lat": 23.242,
+"lon": 69.6669,
+"files": [
+"caz_bhj.gif",
+"pac_bhj.gif",
+"ppi_bhj.gif",
+"ppz_bhj.gif",
+"sri_bhj.gif"
+],
+"code": "bhj",
+"size": [
+1078,
+770
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Chennai",
+"name": "Chennai",
+"lat": 12.9333333,
+"lon": 80.2,
+"files": [
+"caz_cni.gif",
+"pac_cni.gif",
+"ppi_cni.gif",
+"ppz_cni.gif",
+"sri_cni.gif"
+],
+"code": "cni",
+"size": [
+919,
+700
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Goa",
+"name": "Goa",
+"lat": 15.4909,
+"lon": 73.8278,
+"files": [
+"caz_goa.gif",
+"pac_goa.gif",
+"ppi_goa.gif",
+"ppz_goa.gif",
+"sri_goa.gif"
+],
+"code": "goa",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Solapur",
+"name": "Solapur",
+"lat": 17.6599,
+"lon": 75.9064,
+"files": [
+"caz_slp.gif",
+"pac_slp.gif",
+"ppi_slp.gif",
+"ppz_slp.gif",
+"sri_slp.gif"
+],
+"code": "slp",
+"size": "ERR cannot identify image file 'all/slp.gif'",
+"modified": null
+},
+{
+"id": "Gopalpur",
+"name": "Gopalpur",
+"lat": 19.2647,
+"lon": 84.862,
+"files": [
+"caz_gop.gif",
+"pac_gop.gif",
+"ppi_gop.gif",
+"ppz_gop.gif",
+"sri_gop.gif"
+],
+"code": "gop",
+"size": [
+1078,
+770
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Hyderabad",
+"name": "Hyderabad",
+"lat": 17.385,
+"lon": 78.4867,
+"files": [
+"caz_hyd.gif",
+"pac_hyd.gif",
+"ppi_hyd.gif",
+"ppz_hyd.gif",
+"sri_hyd.gif"
+],
+"code": "hyd",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Jaipur",
+"name": "Jaipur",
+"lat": 26.9124,
+"lon": 75.7873,
+"files": [
+"caz_jpr.gif",
+"pac_jpr.gif",
+"ppi_jpr.gif",
+"ppz_jpr.gif",
+"sri_jpr.gif"
+],
+"code": "jpr",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Kolkata",
+"name": "Kolkata",
+"lat": 22.5726,
+"lon": 88.3639,
+"files": [
+"caz_kol.gif",
+"pac_kol.gif",
+"ppi_kol.gif",
+"ppz_kol.gif",
+"sri_kol.gif"
+],
+"code": "kol",
+"size": [
+906,
+700
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Kochi",
+"name": "Kochi",
+"lat": 9.9312,
+"lon": 76.2673,
+"files": [
+"caz_koc.gif",
+"pac_koc.gif",
+"ppi_koc.gif",
+"ppz_koc.gif",
+"sri_koc.gif"
+],
+"code": "koc",
+"size": [
+572,
+572
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Karaikal",
+"name": "Karaikal",
+"lat": 10.9254,
+"lon": 79.838,
+"files": [
+"caz_kkl.gif",
+"pac_kkl.gif",
+"ppi_kkl.gif",
+"ppz_kkl.gif",
+"sri_kkl.gif"
+],
+"code": "kkl",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Lucknow",
+"name": "Lucknow",
+"lat": 26.8467,
+"lon": 80.9462,
+"files": [
+"caz_lkn.gif",
+"pac_lkn.gif",
+"ppi_lkn.gif",
+"ppz_lkn.gif",
+"sri_lkn.gif"
+],
+"code": "lkn",
+"size": [
+704,
+594
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Machilipatnam",
+"name": "Machilipatnam",
+"lat": 16.1905,
+"lon": 81.1362,
+"files": [
+"caz_mpt.gif",
+"pac_mpt.gif",
+"ppi_mpt.gif",
+"ppz_mpt.gif",
+"sri_mpt.gif"
+],
+"code": "mpt",
+"size": [
+1119,
+900
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Banihal",
+"name": "Banihal",
+"lat": 33.51,
+"lon": 75.205,
+"files": [
+"caz_bnh.gif",
+"pac_bnh.gif",
+"ppi_bnh.gif",
+"ppz_bnh.gif",
+"sri_bnh.gif"
+],
+"code": "bnh",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Panvel",
+"name": "Panvel",
+"lat": 18.93194444,
+"lon": 73.16222222,
+"files": [
+"caz_au.gif"
+],
+"code": "au",
+"size": "ERR cannot identify image file 'all/au.gif'",
+"modified": null
+},
+{
+"id": "Vile Parle",
+"name": "Vile Parle",
+"lat": 19.10722222,
+"lon": 72.83694444,
+"files": [
+"caz_vp.gif"
+],
+"code": "vp",
+"size": "ERR cannot identify image file 'all/vp.gif'",
+"modified": null
+},
+{
+"id": "Kalyan-Dombivli",
+"name": "Kalyan-Dombivli",
+"lat": 19.22666667,
+"lon": 73.11833333,
+"files": [
+"caz_kd.gif"
+],
+"code": "kd",
+"size": "ERR cannot identify image file 'all/kd.gif'",
+"modified": null
+},
+{
+"id": "Vasai-Virar",
+"name": "Vasai-Virar",
+"lat": 19.38388889,
+"lon": 72.82861111,
+"files": [
+"caz_vs.gif"
+],
+"code": "vs",
+"size": "ERR cannot identify image file 'all/vs.gif'",
+"modified": null
+},
+{
+"id": "Sambalpur",
+"name": "Sambalpur",
+"lat": 21.5374,
+"lon": 83.9809,
+"files": [
+"caz_sbp.gif",
+"pac_sbp.gif",
+"ppi_sbp.gif",
+"ppz_sbp.gif",
+"sri_sbp.gif"
+],
+"code": "sbp",
+"size": [
+1200,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Belonia",
+"name": "Belonia",
+"lat": 23.2489,
+"lon": 91.463,
+"files": [
+"caz_bln.gif",
+"pac_bln.gif",
+"ppi_bln.gif",
+"ppz_bln.gif",
+"sri_bln.gif"
+],
+"code": "bln",
+"size": [
+940,
+940
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Mumbai-Veravali",
+"name": "Veravali",
+"lat": 19.1342,
+"lon": 72.8672,
+"files": [
+"caz_vrv.gif",
+"pac_vrv.gif",
+"ppi_vrv.gif",
+"ppz_vrv.gif",
+"sri_vrv.gif"
+],
+"code": "vrv",
+"size": [
+1448,
+1086
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Mahabaleshwar",
+"name": "Mahabaleshwar",
+"lat": 17.9217,
+"lon": 73.6556,
+"files": [
+"caz_mbl.gif"
+],
+"code": "mbl",
+"size": "ERR cannot identify image file 'all/mbl.gif'",
+"modified": null
+},
+{
+"id": "Mumbai-Colaba",
+"name": "Mumbai-Colaba",
+"lat": 19.076,
+"lon": 72.8777,
+"files": [
+"caz_mum.gif",
+"pac_mum.gif",
+"ppi_mum.gif",
+"ppz_mum.gif",
+"sri_mum.gif"
+],
+"code": "mum",
+"size": [
+1078,
+770
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Nagpur",
+"name": "Nagpur",
+"lat": 21.1458,
+"lon": 79.0882,
+"files": [
+"caz_ngp.gif",
+"pac_ngp.gif",
+"ppi_ngp.gif",
+"ppz_ngp.gif",
+"sri_ngp.gif"
+],
+"code": "ngp",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Sohra",
+"name": "Sohra",
+"lat": 25.2702,
+"lon": 91.7323,
+"files": [
+"caz_cpj.gif",
+"pac_cpj.gif",
+"ppi_cpj.gif",
+"ppz_cpj.gif",
+"sri_cpj.gif"
+],
+"code": "cpj",
+"size": [
+1078,
+770
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Patiala",
+"name": "Patiala",
+"lat": 30.3398,
+"lon": 76.3869,
+"files": [
+"caz_ptl.gif",
+"pac_ptl.gif",
+"ppi_ptl.gif",
+"ppz_ptl.gif",
+"sri_ptl.gif"
+],
+"code": "ptl",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Patna",
+"name": "Patna",
+"lat": 25.5941,
+"lon": 85.1376,
+"files": [
+"caz_ptn.gif",
+"pac_ptn.gif",
+"ppi_ptn.gif",
+"ppz_ptn.gif",
+"sri_ptn.gif"
+],
+"code": "ptn",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Leh",
+"name": "Leh",
+"lat": 34.28333333,
+"lon": 77.2833333,
+"files": [
+"caz_leh.gif",
+"pac_leh.gif",
+"ppi_leh.gif",
+"ppz_leh.gif",
+"sri_leh.gif"
+],
+"code": "leh",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Srinagar",
+"name": "Srinagar",
+"lat": 34.0516666,
+"lon": 74.805,
+"files": [
+"caz_srn.gif",
+"pac_srn.gif",
+"ppi_srn.gif",
+"ppz_srn.gif",
+"sri_srn.gif"
+],
+"code": "srn",
+"size": [
+880,
+523
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Jammu",
+"name": "Jammu",
+"lat": 21.25,
+"lon": 81.629997,
+"files": [
+"caz_jmu.gif",
+"pac_jmu.gif",
+"ppi_jmu.gif",
+"ppz_jmu.gif",
+"sri_jmu.gif"
+],
+"code": "jmu",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Tezpur",
+"name": "Tezpur",
+"lat": 8.5241,
+"lon": 76.9366,
+"files": [
+"caz_tez.gif",
+"pac_tez.gif",
+"ppi_tez.gif",
+"ppz_tez.gif",
+"sri_tez.gif"
+],
+"code": "tez",
+"size": [
+940,
+940
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Thiruvananthapuram",
+"name": "Thiruvananthapuram",
+"lat": 8.5241,
+"lon": 76.9366,
+"files": [
+"caz_tvm.gif",
+"pac_tvm.gif",
+"ppi_tvm.gif",
+"ppz_tvm.gif",
+"sri_tvm.gif"
+],
+"code": "tvm",
+"size": [
+1082,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Visakhapatnam",
+"name": "Visakhapatnam",
+"lat": 17.6868,
+"lon": 83.2185,
+"files": [
+"caz_vsk.gif",
+"pac_vsk.gif",
+"ppi_vsk.gif",
+"ppz_vsk.gif",
+"sri_vsk.gif"
+],
+"code": "vsk",
+"size": [
+1006,
+800
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Mohanbari",
+"name": "Mohanbari",
+"lat": 27.4728,
+"lon": 94.912,
+"files": [
+"caz_mbr.gif",
+"pac_mbr.gif",
+"ppi_mbr.gif",
+"ppz_mbr.gif",
+"sri_mbr.gif"
+],
+"code": "mbr",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Paradip",
+"name": "Paradip",
+"lat": 20.3166,
+"lon": 86.6114,
+"files": [
+"caz_pdp.gif",
+"pac_pdp.gif",
+"ppi_pdp.gif",
+"ppz_pdp.gif",
+"sri_pdp.gif"
+],
+"code": "pdp",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Sriharikota",
+"name": "Sriharikota",
+"lat": 13.7259,
+"lon": 80.2266,
+"files": [
+"caz_shr.gif",
+"pac_shr.gif",
+"ppi_shr.gif",
+"ppz_shr.gif",
+"sri_shr.gif"
+],
+"code": "shr",
+"size": [
+3065,
+2513
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Jot",
+"name": "Jot",
+"lat": 32.48666,
+"lon": 76.2673,
+"files": [
+"caz_jot.gif",
+"pac_jot.gif",
+"ppi_jot.gif",
+"ppz_jot.gif",
+"sri_jot.gif"
+],
+"code": "jot",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Murari",
+"name": "Murari",
+"lat": 31.505,
+"lon": 76.81333,
+"files": [
+"caz_mur.gif",
+"pac_mur.gif",
+"ppi_mur.gif",
+"ppz_mur.gif",
+"sri_mur.gif"
+],
+"code": "mur",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Palam",
+"name": "Delhi-Palam",
+"lat": 28.5901,
+"lon": 77.0888,
+"files": [
+"caz_dlh.gif",
+"pac_dlh.gif",
+"ppi_dlh.gif",
+"ppz_dlh.gif",
+"sri_dlh.gif"
+],
+"code": "dlh",
+"size": [
+880,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Mukteshwar",
+"name": "Mukteshwar",
+"lat": 29.46,
+"lon": 79.66,
+"files": [
+"caz_mks.gif",
+"pac_mks.gif",
+"ppi_mks.gif",
+"ppz_mks.gif",
+"sri_mks.gif"
+],
+"code": "mks",
+"size": [
+1017,
+787
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Kufri",
+"name": "Kufri",
+"lat": 31.0983333,
+"lon": 77.265,
+"files": [
+"caz_kuf.gif",
+"pac_kuf.gif",
+"ppi_kuf.gif",
+"ppz_kuf.gif",
+"sri_kuf.gif"
+],
+"code": "kuf",
+"size": [
+1250,
+1020
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Surkandaji",
+"name": "Surkandaji",
+"lat": 30.41166,
+"lon": 78.28833,
+"files": [
+"caz_sur.gif",
+"pac_sur.gif",
+"ppi_sur.gif",
+"ppz_sur.gif",
+"sri_sur.gif"
+],
+"code": "sur",
+"size": [
+1272,
+1042
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Lansdowne",
+"name": "Lansdowne",
+"lat": 29.85,
+"lon": 78.676666,
+"files": [
+"caz_ldn.gif",
+"pac_ldn.gif",
+"ppi_ldn.gif",
+"ppz_ldn.gif",
+"sri_ldn.gif"
+],
+"code": "ldn",
+"size": [
+1017,
+787
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Raipur",
+"name": "Raipur",
+"lat": 21.25,
+"lon": 81.629997,
+"files": [
+"caz_rpr.gif",
+"pac_rpr.gif",
+"ppi_rpr.gif",
+"ppz_rpr.gif",
+"sri_rpr.gif"
+],
+"code": "rpr",
+"size": [
+1637,
+1407
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Mangaluru",
+"name": "Mangaluru",
+"lat": 12.95,
+"lon": 74.84,
+"files": [
+"caz_mlr.gif",
+"pac_mlr.gif",
+"ppi_mlr.gif",
+"ppz_mlr.gif",
+"sri_mlr.gif"
+],
+"code": "mlr",
+"size": [
+1310,
+1080
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Pallikaranai",
+"name": "Pallikaranai",
+"lat": 12.9451,
+"lon": 80.2115,
+"files": [
+"caz_plk.gif",
+"pac_plk.gif",
+"ppi_plk.gif",
+"ppz_plk.gif",
+"sri_plk.gif"
+],
+"code": "plk",
+"size": [
+3038,
+2490
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Jorhat",
+"name": "Jorhat",
+"lat": 26.71689,
+"lon": 94.19397,
+"files": [
+"caz_jrh.gif",
+"pac_jrh.gif",
+"ppi_jrh.gif",
+"ppz_jrh.gif",
+"sri_jrh.gif"
+],
+"code": "jrh",
+"size": [
+720,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+},
+{
+"id": "Silkheda",
+"name": "Silkheda",
+"lat": 23.5716,
+"lon": 77.2461,
+"files": [
+"caz_sil.gif",
+"pac_sil.gif",
+"ppi_sil.gif",
+"ppz_sil.gif",
+"sri_sil.gif"
+],
+"code": "sil",
+"size": [
+720,
+720
+],
+"modified": "Thu, 29 Oct 2026 03:05:01 GMT"
+}
+]

@@ -150,8 +150,8 @@ Make a new one the same way and paste it into the secret.
 - **Hosting:** Cloudflare Pages project **`wapk`**, account mashhood.droid.
 - **Address:** https://wapk.pages.dev
 - **Type:** static files only. No build step, no framework. Leaflet 1.9.4 for the map.
-- **The fourteen files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
-  styles.css, radar.css, weather-logic.js, health.js, borders.json, pointforecast.js, wapk-logo.png`. **Nothing else.**
+- **The fifteen files that get deployed:** `index.html, app.js, effects.js, icons.js, forecast.js, radar.js, views.js,
+  styles.css, radar.css, weather-logic.js, health.js, borders.json, pointforecast.js, wapk-logo.png, imdradar.js`. **Nothing else.**
 
 ### Screens
 
@@ -857,9 +857,9 @@ place labels (390) → Leaflet overlays (400) → fires (410) → markers.
 # 1. Check the account
 npx wrangler whoami          # must say Mashhood.droid@gmail.com's Account
 
-# 2. Copy ONLY the fourteen site files into an empty folder (never deploy the project folder itself)
+# 2. Copy ONLY the fifteen site files into an empty folder (never deploy the project folder itself)
 mkdir C:\temp\wapk-dist
-copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js borders.json pointforecast.js wapk-logo.png C:\temp\wapk-dist\
+copy index.html app.js effects.js icons.js forecast.js radar.js views.js styles.css radar.css weather-logic.js health.js borders.json pointforecast.js wapk-logo.png imdradar.js C:\temp\wapk-dist\
 
 # 3. Deploy
 npx wrangler pages deploy C:\temp\wapk-dist --project-name wapk --branch main
@@ -967,7 +967,7 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 
 ## 20. Rules and gotchas to never forget
 
-1. **Deploy only the fourteen site files**, never the whole project folder (`.openai/` and `test.txt` are private).
+1. **Deploy only the fifteen site files**, never the whole project folder (`.openai/` and `test.txt` are private).
 2. **Always check `npx wrangler whoami`** shows mashhood.droid before deploying.
 3. **Bump `?v=`** in `index.html` for every changed JS/CSS file.
 4. **Bump `FORMAT_VERSION`** for any change to map fields, encodings or steps.
@@ -1054,3 +1054,24 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 - Tried and reverted: full-resolution EUMETSAT tiles when zoomed in, and pane-level opacity — they washed out
   infrared and changed brightness while zooming. Meteosat IODC visible is ~3–4 km per pixel over Pakistan; true 1 km
   detail would need the HRV channel from the EUMETSAT Data Store, processed ourselves.
+
+## IMD India radar (north-west, 29 Oct 2026)
+
+- **What:** 11 IMD radars near Pakistan drawn with the Radar layer: Delhi (Palam), Jaipur, Patiala, Bhuj, Srinagar,
+  Murari Devi, Jot, Kufri, Surkanda Devi, Lansdowne, Mukteshwar. Settings → PMD radar → "Include IMD India radars"
+  (remembered in `wapk.imdRadar`).
+- **Why it is built this way:** IMD's site is unreachable from Pakistan and publishes finished pictures
+  (`https://mausam.imd.gov.in/Radar/caz_<code>.gif`, MAX(Z)), not map layers. The worker route
+  `/api/imd-radar/<code>` (allow-listed codes only) fetches and caches each picture for 5 min and sends
+  `X-Image-Changed` — when its SHA-1 last changed (D1 table `imd_radar_seen`), because IMD dates every file "now".
+  `imdradar.js` (browser) keeps only IMD's rain colours inside the radar circle, fills thin border gaps, and places
+  the picture with per-station geometry; radars unchanged for 90 min are hidden (several IMD radars freeze for days).
+  The free Workers plan allows ~10 ms CPU, so the cutting-out runs in the browser (~150 KB per radar per 10 min).
+- **Geometry** (`STATIONS` in imdradar.js) was measured per station: map square, centre, px/km (from the printed
+  range, rings or lat/lon grid) and a radar position fitted against Natural Earth state boundaries
+  (`pipeline/imd/fit3.py`, `fit4.py`). A picture of another size = IMD changed the layout → that radar is skipped.
+- **Adding stations:** `pipeline/imd/stations.json` has all 52 IMD stations and file codes. About 12 were frozen or
+  under maintenance on 29 Oct 2026 (Kolkata since May, Leh since June, Jammu since 15 Oct, Kochi and Veraval in
+  maintenance, Mumbai X-band files missing). Measure a station, check it with the boundary overlay, add it to
+  `STATIONS` and to `IMD_RADAR_CODES` in `worker/index.js`.
+- **Copyright:** pictures © India Meteorological Department; credited on the map.

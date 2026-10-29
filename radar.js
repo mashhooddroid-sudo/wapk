@@ -68,6 +68,8 @@
     pmdProduct: document.getElementById("radarPmdProduct"),
     pmdStatus: document.getElementById("radarPmdStatus"),
     pmdToggle: document.getElementById("radarPmdToggle"),
+    imdToggle: document.getElementById("radarImdToggle"),
+    imdStatus: document.getElementById("radarImdStatus"),
     radiusInput: document.getElementById("radarRadiusInput"),
     radiusValue: document.getElementById("radarRadiusValue"),
     satelliteProduct: document.getElementById("radarSatelliteProduct"),
@@ -252,6 +254,7 @@
     state.userWatchId = null;
     if (state.audioContext?.state === "running") state.audioContext.suspend().catch(() => {});
     state.map?.stop();
+    state.imdRadar?.setVisible(false);
   }
 
   function resume() {
@@ -361,6 +364,14 @@
     state.map.getPane("pmdRadar").style.zIndex = "350";
     state.map.getPane("pmdRadar").style.pointerEvents = "none";
     state.pmdLayer = L.layerGroup().addTo(state.map);
+    // IMD India radars (north-west) in the same pane, shown with the Radar layer (imdradar.js).
+    state.imdRadar = window.WapkImdRadar?.attach(state.map, {
+      pane: "pmdRadar",
+      apiUrl,
+      getOpacity: getWeatherOpacity,
+      onStatus: renderImdStatus,
+    }) || null;
+    els.imdToggle.checked = readImdPreference();
     // Active fires (NASA FIRMS), drawn on one canvas for speed. It sits above Leaflet's overlay pane (400), whose
     // full-map canvas would otherwise catch clicks meant for a fire; clicks between fires still reach the map.
     state.map.createPane("fires").style.zIndex = "410";
@@ -427,6 +438,11 @@
       fetchStrikes(false);
       fetchSatellite(false);
       fetchPmdRadar(false);
+    });
+
+    els.imdToggle.addEventListener("change", () => {
+      saveImdPreference(els.imdToggle.checked);
+      syncImdRadar();
     });
 
     els.pmdToggle.addEventListener("change", () => {
@@ -626,6 +642,7 @@
   }
 
   function renderPmdRadar() {
+    syncImdRadar();
     state.pmdLayer.clearLayers();
     els.pmdLegend.hidden = true;
     els.pmdProduct.disabled = !els.pmdToggle.checked;
@@ -1111,6 +1128,7 @@
   function updateWeatherOpacity() {
     const opacity = getWeatherOpacity();
     state.pmdLayer?.eachLayer((layer) => layer.setOpacity(opacity));
+    state.imdRadar?.setOpacity(opacity);
     state.satelliteOverlay?.setOpacity(opacity);
     state.satelliteStyled?.setOpacity(styledOpacity());
   }
@@ -2134,6 +2152,44 @@
 
   function nominatimUrl(query) {
     return `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
+  }
+
+  // IMD radars follow the Radar button (and the map being open); Settings can leave them out to save data.
+  function syncImdRadar() {
+    const on = Boolean(state.imdRadar) && isActive() && els.pmdToggle.checked && els.imdToggle.checked;
+    state.imdRadar?.setVisible(on);
+    if (!on) renderImdStatus(null);
+  }
+
+  function renderImdStatus(summary) {
+    if (!els.imdStatus) return;
+    if (!els.imdToggle.checked) {
+      els.imdStatus.textContent = "IMD India radars are off.";
+      return;
+    }
+    if (!summary) {
+      els.imdStatus.textContent = els.pmdToggle.checked ? "Loading IMD radars…" : "IMD radars show with the Radar layer.";
+      return;
+    }
+    const parts = [summary.shown.length ? `Showing ${summary.shown.join(", ")}.` : "No IMD radar picture is current right now."];
+    if (summary.stale.length) parts.push(`Not updating: ${summary.stale.join(", ")}.`);
+    els.imdStatus.textContent = `${parts.join(" ")} IMD pictures, rain cut out and placed by WAPK; positions within a few km.`;
+  }
+
+  function readImdPreference() {
+    try {
+      return localStorage.getItem("wapk.imdRadar") !== "0";
+    } catch {
+      return true;
+    }
+  }
+
+  function saveImdPreference(on) {
+    try {
+      localStorage.setItem("wapk.imdRadar", on ? "1" : "0");
+    } catch {
+      // The choice still applies for this visit.
+    }
   }
 
   function apiUrl(path) {

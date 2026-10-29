@@ -133,6 +133,10 @@ export default {
         return await handlePmdRadar();
       }
 
+      if (url.pathname.startsWith("/api/imd-radar/")) {
+        return await handleImdRadar(env, ctx, url.pathname.slice("/api/imd-radar/".length));
+      }
+
       if (url.pathname === "/api/fires") {
         return await handleFires(env, url);
       }
@@ -991,6 +995,62 @@ async function refreshFires(env) {
 
 async function ensureFireTable(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS fire_snapshot (id TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, data TEXT NOT NULL)").run();
+}
+
+// IMD (India Meteorological Department) radar pictures for WAPK's map. IMD's site cannot be reached from
+// Pakistan, so the worker fetches the station's "MAX(Z)" picture, caches it for 5 minutes and passes it on; the
+// browser cuts the rain out and places it on the map (imdradar.js). IMD's server dates every file "now", so the
+// worker remembers when each picture last changed (X-Image-Changed) and the map hides radars that stopped updating.
+const IMD_RADAR_CODES = new Set(["delhi", "jpr", "ptl", "bhj", "srn", "mur", "jot", "kuf", "sur", "ldn", "mks"]);
+const IMD_RADAR_CACHE_SECONDS = 300;
+
+async function handleImdRadar(env, ctx, code) {
+  if (!IMD_RADAR_CODES.has(code)) return jsonResponse({ success: false, error: "Unknown IMD radar." }, 404);
+  const cacheKey = new Request(`https://wapk-cache.internal/imd-radar/${code}`);
+  const cache = caches.default;
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+  let response;
+  try {
+    response = await fetch(`https://mausam.imd.gov.in/Radar/caz_${code}.gif`, {
+      headers: { "User-Agent": "WAPK-Weather-Alert-PK/1.0 (+https://wapk.pages.dev)" },
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (error) {
+    return jsonResponse({ success: false, error: "IMD did not answer." }, 502);
+  }
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok || !contentType.startsWith("image/")) {
+    return jsonResponse({ success: false, error: `IMD returned ${response.status}.` }, 502);
+  }
+  const body = await response.arrayBuffer();
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-1", body))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  let changedAt = Date.now();
+  try {
+    assertDb(env);
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS imd_radar_seen (code TEXT PRIMARY KEY, hash TEXT NOT NULL, changed_at INTEGER NOT NULL)").run();
+    const seen = await env.DB.prepare("SELECT hash, changed_at AS changedAt FROM imd_radar_seen WHERE code = ?").bind(code).first();
+    if (seen && seen.hash === digest) changedAt = seen.changedAt;
+    else {
+      await env.DB.prepare(
+        `INSERT INTO imd_radar_seen (code, hash, changed_at) VALUES (?, ?, ?)
+         ON CONFLICT(code) DO UPDATE SET hash = excluded.hash, changed_at = excluded.changed_at`,
+      ).bind(code, digest, changedAt).run();
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ message: "imd radar tracking failed", code, error: String(error) }));
+  }
+  const result = new Response(body, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": contentType,
+      "Cache-Control": `public, max-age=${IMD_RADAR_CACHE_SECONDS}`,
+      "Access-Control-Expose-Headers": "X-Image-Changed",
+      "X-Image-Changed": String(changedAt),
+    },
+  });
+  ctx.waitUntil(cache.put(cacheKey, result.clone()));
+  return result;
 }
 
 async function handlePmdRadar() {
