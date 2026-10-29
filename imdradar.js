@@ -224,6 +224,7 @@
 
     return {
       setVisible,
+      isVisible: () => state.visible,
       refresh,
       setOpacity: (opacity) => state.layers.forEach((layer) => layer.setOpacity(opacity)),
       summary,

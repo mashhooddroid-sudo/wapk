@@ -70,6 +70,8 @@
     pmdToggle: document.getElementById("radarPmdToggle"),
     imdToggle: document.getElementById("radarImdToggle"),
     imdStatus: document.getElementById("radarImdStatus"),
+    radarLegend: document.getElementById("radarRadarLegend"),
+    forecastLegend: document.getElementById("radarForecastLegend"),
     radiusInput: document.getElementById("radarRadiusInput"),
     radiusValue: document.getElementById("radarRadiusValue"),
     satelliteProduct: document.getElementById("radarSatelliteProduct"),
@@ -372,6 +374,10 @@
       onStatus: renderImdStatus,
     }) || null;
     els.imdToggle.checked = readImdPreference();
+    // Legends move when another one appears or changes size (the forecast legend is drawn by forecast.js).
+    const legendWatch = new MutationObserver(stackLegends);
+    [els.forecastLegend, els.satelliteLegend].forEach((legend) => legend && legendWatch.observe(legend, { attributes: true, attributeFilter: ["hidden"], childList: true, subtree: true }));
+    window.addEventListener("resize", stackLegends);
     // Active fires (NASA FIRMS), drawn on one canvas for speed. It sits above Leaflet's overlay pane (400), whose
     // full-map canvas would otherwise catch clicks meant for a fire; clicks between fires still reach the map.
     state.map.createPane("fires").style.zIndex = "410";
@@ -643,6 +649,8 @@
 
   function renderPmdRadar() {
     syncImdRadar();
+    state.pmdLegendProduct = null;
+    renderRadarLegend();
     state.pmdLayer.clearLayers();
     els.pmdLegend.hidden = true;
     els.pmdProduct.disabled = !els.pmdToggle.checked;
@@ -656,6 +664,7 @@
     // Each entry is status text, plus the radar's bounds when it is drawn so the visitor can jump to it.
     const lines = [];
     let legend = null;
+    let pmdDrawn = false;
     state.pmdRadar.sites.forEach((site) => {
       const product = site.products.find((item) => item.code === code);
       const frame = product?.frames[product.frames.length - 1];
@@ -710,8 +719,11 @@
         attribution: 'Radar &copy; <a href="https://ffd.pmd.gov.pk/radar" target="_blank" rel="noopener noreferrer">PMD FFD</a>',
       }).addTo(state.pmdLayer);
       lines.push({ text: `${site.name}: live, ${formatRadarTime(frameMs)} (${formatAge(frameMs)})`, bounds, name: site.name });
+      pmdDrawn = true;
     });
 
+    state.pmdLegendProduct = pmdDrawn ? code : null;
+    renderRadarLegend();
     if (legend?.legend) {
       els.pmdLegend.src = legend.legend;
       els.pmdLegend.alt = `Colour scale for ${legend.label}, in ${legend.units}`;
@@ -2154,6 +2166,72 @@
     return `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
   }
 
+  // ── Radar legend: PMD's scale for the shown product, IMD's reflectivity scale ──
+  // Colours from PMD's own legend pictures (ffd.pmd.gov.pk/storage/radar/legends) and IMD's pictures, weakest first.
+  const RADAR_SCALES = {
+    rate: {
+      title: "PMD rain rate (mm/h)",
+      colours: ["#a7ffff", "#51f2ff", "#66d4fb", "#0097ff", "#026df8", "#0745f8", "#a7fa84", "#57fa23", "#05e033", "#fcfe4d", "#ffd800", "#ffa600", "#fd8113", "#ff1c00", "#cc0071", "#9900cc"],
+      ticks: [[0, "1"], [5, "10"], [9, "43"], [12, "100"], [15, "233"]],
+    },
+    rain12: {
+      title: "PMD rainfall, last 12 h (mm)",
+      colours: ["#e6e6fa", "#66d4fb", "#0097ff", "#0000ff", "#90ee90", "#57fa23", "#05e033", "#fcfe4d", "#ffd800", "#ffa600", "#fd8113", "#ff1c00", "#bb4040", "#561238", "#9900cc"],
+      ticks: [[0, "0.5"], [4, "6"], [8, "35"], [11, "120"], [14, "360"]],
+    },
+    imd: {
+      title: "IMD radar reflectivity (dBZ)",
+      colours: ["#3a00a0", "#0019b0", "#003ac8", "#0047ff", "#0079ff", "#1aa3ff", "#53d1ff", "#87f1ff", "#ffffff", "#fcfc7a", "#ffe600", "#ffbd00", "#ff7300", "#ff3f00", "#c80000"],
+      ticks: [[0, "20"], [4, "30"], [8, "41"], [12, "52"], [14, "60"]],
+    },
+  };
+
+  function radarScaleRow(scale) {
+    const row = document.createElement("div");
+    row.className = "map-radar-legend-row";
+    const title = document.createElement("div");
+    title.className = "map-legend-title";
+    title.textContent = scale.title;
+    const bar = document.createElement("div");
+    bar.className = "map-legend-bar";
+    const step = 100 / scale.colours.length;
+    bar.style.background = `linear-gradient(90deg, ${scale.colours.map((colour, index) => `${colour} ${(index * step).toFixed(2)}% ${((index + 1) * step).toFixed(2)}%`).join(", ")})`;
+    const ticks = document.createElement("div");
+    ticks.className = "map-legend-ticks";
+    scale.ticks.forEach(([index, label]) => {
+      const tick = document.createElement("span");
+      tick.textContent = label;
+      tick.style.left = `${((index + 0.5) * step).toFixed(2)}%`;
+      ticks.append(tick);
+    });
+    row.append(title, bar, ticks);
+    return row;
+  }
+
+  function renderRadarLegend() {
+    const legend = els.radarLegend;
+    if (!legend) return;
+    const rows = [];
+    if (els.pmdToggle.checked && state.pmdLegendProduct) rows.push(radarScaleRow(state.pmdLegendProduct === "rain12" ? RADAR_SCALES.rain12 : RADAR_SCALES.rate));
+    if (els.pmdToggle.checked && state.imdShown && state.imdRadar?.isVisible()) rows.push(radarScaleRow(RADAR_SCALES.imd));
+    legend.replaceChildren(...rows);
+    legend.hidden = !rows.length;
+    stackLegends();
+  }
+
+  // The forecast, satellite and radar legends share the bottom-left corner: stack whichever are showing.
+  function stackLegends() {
+    const legends = [els.forecastLegend, els.satelliteLegend, els.radarLegend].filter(Boolean);
+    legends.forEach((legend) => (legend.style.bottom = ""));
+    const shown = legends.filter((legend) => !legend.hidden);
+    if (!shown.length) return;
+    let bottom = parseFloat(getComputedStyle(shown[0]).bottom) || 80;
+    shown.forEach((legend) => {
+      legend.style.bottom = `${bottom}px`;
+      bottom += legend.offsetHeight + 8;
+    });
+  }
+
   // IMD radars follow the Radar button (and the map being open); Settings can leave them out to save data.
   function syncImdRadar() {
     const on = Boolean(state.imdRadar) && isActive() && els.pmdToggle.checked && els.imdToggle.checked;
@@ -2162,6 +2240,8 @@
   }
 
   function renderImdStatus(summary) {
+    state.imdShown = Boolean(summary?.shown.length);
+    renderRadarLegend();
     if (!els.imdStatus) return;
     if (!els.imdToggle.checked) {
       els.imdStatus.textContent = "IMD India radars are off.";
