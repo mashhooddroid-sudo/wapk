@@ -248,7 +248,7 @@
     });
     syncControls();
 
-    return { resume, pause, setTheme, setEnabled, setPicker, setTimeTo, openPicker: () => picker.lat !== null && options.onPickerOpen?.(picker.lat, picker.lon) };
+    return { resume, pause, setTheme, setEnabled, setPicker, setTimeTo, refreshPicker: () => updatePicker(), openPicker: () => picker.lat !== null && options.onPickerOpen?.(picker.lat, picker.lon) };
 
     // Lets the satellite and radar controls switch the forecast colours off (or on).
     function setEnabled(enabled) {
@@ -779,6 +779,13 @@
       if (!node) return;
       const valueNode = node.querySelector(".picker-value");
       const windNode = node.querySelector(".picker-wind");
+      // Another layer (the infrared satellite) can supply the reading instead: { value, detail }.
+      const other = options.pickerReading?.(picker.lat, picker.lon);
+      if (other) {
+        valueNode.textContent = other.value;
+        windNode.replaceChildren(other.detail || "");
+        return;
+      }
       const data = state.lastData;
       if (!data || !state.meta || !insideGrid(picker.lat, picker.lon)) {
         valueNode.textContent = "Forecast";

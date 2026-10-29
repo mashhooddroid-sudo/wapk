@@ -1041,3 +1041,16 @@ Open https://lightning-weatherx-pk-api.mashhood-droid.workers.dev/api/fires → 
 - **Phones (≤ 760 px):** the map fills the screen; layers open from the round Layers button.
 - **Embed for the WAPK app:** `https://wapk.pages.dev/?embed=1&lat=<lat>&lon=<lon>#mapsView` shows only the map.
   The Flutter app's map tab (`lib/screens/home_screen.dart`, `_updateWindy`) loads this instead of Windy.
+
+## Satellite: Windy-style Infrared and Visible (29 Oct 2026)
+
+- `radar.js` redraws the worker's stored Meteosat picture pixel by pixel (`SATELLITE_STYLES`, one colour per grey level):
+  - **Infrared:** EUMETSAT's grey is linear in temperature (0 ≈ +30 °C, 254 ≈ −70 °C). Above +2 °C (ground, sea) is
+    see-through; +2 to −42 °C goes grey → white, faint → solid; colder tops are coloured (light blue −50, blue −58,
+    purple −64, red −70, yellow −76 °C). Legend "Cloud-top temperature" shows only with Infrared.
+  - **Visible:** stretched and brightened (gamma 0.6); the dark night side fades out.
+  - Other products (Natural colour, Water vapour, …) are drawn as before.
+- The picker shows the infrared temperature under it ("Cloud top" or "Ground, no cloud").
+- Tried and reverted: full-resolution EUMETSAT tiles when zoomed in, and pane-level opacity — they washed out
+  infrared and changed brightness while zooming. Meteosat IODC visible is ~3–4 km per pixel over Pakistan; true 1 km
+  detail would need the HRV channel from the EUMETSAT Data Store, processed ourselves.

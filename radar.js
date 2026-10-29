@@ -72,6 +72,7 @@
     radiusValue: document.getElementById("radarRadiusValue"),
     satelliteProduct: document.getElementById("radarSatelliteProduct"),
     satelliteToggle: document.getElementById("radarSatelliteToggle"),
+    satelliteLegend: document.getElementById("radarSatelliteLegend"),
     firesToggle: document.getElementById("radarFiresToggle"),
     firesNote: document.getElementById("radarFiresNote"),
     firesWindowWrap: document.getElementById("radarFiresWindowWrap"),
@@ -389,6 +390,8 @@
         if (state.pointForecast?.isOpen()) state.pointForecast.open(lat, lon);
       },
       onTimeChange: (ms) => state.pointForecast?.setTime(ms),
+      // With Windy-style infrared on, the picker shows the cloud-top (or ground) temperature under it.
+      pickerReading: (lat, lon) => satelliteReading(lat, lon),
       // Choosing a forecast layer hides satellite and radar; they can be turned back on by hand.
       onLayerChosen: () => {
         if (els.satelliteToggle.checked) {
@@ -760,6 +763,15 @@
 
   function renderSatellite() {
     const pane = state.map.getPane("satellite");
+    const styled = els.satelliteToggle.checked && state.satelliteMeta && SATELLITE_STYLES[currentSatelliteProduct().id];
+    renderSatelliteLegend(styled ? currentSatelliteProduct().id : null);
+    // Leaving a Windy-style product removes its drawn picture.
+    if (!styled && state.satelliteStyled) {
+      state.map.removeLayer(state.satelliteStyled);
+      state.satelliteStyled = null;
+      state.satelliteStyledKey = null;
+      state.forecast?.refreshPicker();
+    }
     // A picture still loading for an earlier choice is no longer wanted.
     if (state.satellitePending) state.map.removeLayer(state.satellitePending);
     state.satellitePending = null;
@@ -768,7 +780,12 @@
       els.satelliteBar.hidden = true;
       if (state.satelliteOverlay) state.map.removeLayer(state.satelliteOverlay);
       state.satelliteOverlay = null;
+      if (state.satelliteStyled) state.map.removeLayer(state.satelliteStyled);
+      state.satelliteStyled = null;
+      state.satelliteStyledKey = null;
+      renderSatelliteLegend(null);
       state.satelliteRequest += 1;
+      state.forecast?.refreshPicker();
       setWeatherStatus("Satellite images are off. Turn on Satellite in the layer list.");
       return;
     }
@@ -777,6 +794,10 @@
     // Areas without imagery come back black (night side, space). In dark theme the images are screen-blended,
     // so black disappears into the map and the dark map barely changes the image's own colours.
     pane.style.mixBlendMode = state.theme === "dark" ? "screen" : "normal";
+    if (styled) {
+      renderStyledSatellite(product, pane);
+      return;
+    }
     if (state.satelliteOverlay?._url === product.url) {
       describeSatellite(product);
       return;
@@ -810,6 +831,192 @@
     state.satellitePending = overlay;
     overlay.addTo(state.map);
     if (state.satelliteOverlay) overlay.setOpacity(0);
+  }
+
+  // ── Windy-style satellite (Infrared and Visible) ─────────────────────────
+  // The worker's Meteosat picture is redrawn pixel by pixel: in infrared, clear ground is see-through and
+  // clouds turn whiter and more solid the colder their tops, with the coldest storm tops coloured; in visible,
+  // the dark, flat reflectance is stretched and brightened and the night side fades out. Each grey level maps
+  // to one colour (SATELLITE_STYLES), so a whole picture is one table lookup per pixel.
+  //
+  // EUMETSAT's infrared grey is linear in brightness temperature: 0 ≈ +30 °C, 254 ≈ −70 °C (checked against
+  // the Arabian Sea at about +28 °C).
+  const irCelsius = (grey) => 30 - (grey * 100) / 254;
+  const IR_COLD_STOPS = [[-42, [255, 255, 255]], [-50, [154, 216, 255]], [-58, [61, 123, 255]], [-64, [138, 61, 255]], [-70, [255, 61, 90]], [-76, [255, 216, 77]]];
+  const SATELLITE_STYLES = {
+    ir108: (grey) => {
+      const celsius = irCelsius(grey);
+      // Above +2 °C is ground or sea (cool dawn ground stays clear too).
+      if (celsius >= 2) return [0, 0, 0, 0];
+      if (celsius > -42) {
+        // From +2 °C (thin, low cloud) to −42 °C (high cloud): grey to white, faint to solid.
+        const f = Math.min(1, (2 - celsius) / 44);
+        const level = Math.round(170 + 85 * f);
+        return [level, level, Math.min(255, level + 6), Math.round(255 * Math.min(1, 0.05 + 0.95 * f ** 1.1))];
+      }
+      for (let index = 1; index < IR_COLD_STOPS.length; index += 1) {
+        const [warm, from] = IR_COLD_STOPS[index - 1];
+        const [cold, to] = IR_COLD_STOPS[index];
+        if (celsius >= cold) {
+          const t = (warm - celsius) / (warm - cold);
+          return [...from.map((value, channel) => Math.round(value + (to[channel] - value) * t)), 255];
+        }
+      }
+      return [...IR_COLD_STOPS[IR_COLD_STOPS.length - 1][1], 255];
+    },
+    vis006: (grey) => {
+      const value = Math.min(1, Math.max(0, (grey - 6) / 190)) ** 0.6;
+      const level = Math.round(255 * value);
+      return [level, level, level, Math.round(255 * Math.min(1, value / 0.35))];
+    },
+  };
+  const satelliteTables = new Map();
+  const styledCanvases = new Map();
+  const STYLED_CACHE = 8;
+  let CanvasImageOverlay = null;
+
+  function satelliteTable(id) {
+    if (!satelliteTables.has(id)) {
+      const table = new Uint8ClampedArray(256 * 4);
+      for (let grey = 0; grey < 256; grey += 1) table.set(SATELLITE_STYLES[id](grey), grey * 4);
+      satelliteTables.set(id, table);
+    }
+    return satelliteTables.get(id);
+  }
+
+  // Loads the stored picture and redraws it with the product's colour table; recent pictures are kept for playback.
+  async function styledCanvas(product) {
+    const key = `${product.id}|${product.url}`;
+    if (styledCanvases.has(key)) return styledCanvases.get(key);
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    image.src = product.url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const picture = context.getImageData(0, 0, canvas.width, canvas.height);
+    const pixels = picture.data;
+    const grey = new Uint8Array(pixels.length / 4);
+    for (let index = 0; index < grey.length; index += 1) grey[index] = pixels[index * 4 + 1];
+    const table = satelliteTable(product.id);
+    for (let index = 0; index < pixels.length; index += 4) {
+      const entry = pixels[index + 1] * 4; // Grey pictures: any channel is the grey level.
+      pixels[index] = table[entry];
+      pixels[index + 1] = table[entry + 1];
+      pixels[index + 2] = table[entry + 2];
+      pixels[index + 3] = table[entry + 3];
+    }
+    context.putImageData(picture, 0, 0);
+    canvas.grey = grey;
+    styledCanvases.set(key, canvas);
+    if (styledCanvases.size > STYLED_CACHE) styledCanvases.delete(styledCanvases.keys().next().value);
+    return canvas;
+  }
+
+  async function renderStyledSatellite(product, pane) {
+    // The drawn picture has its own transparency, so it is not screen-blended like the plain pictures.
+    pane.style.mixBlendMode = "normal";
+    if (state.satelliteOverlay) state.map.removeLayer(state.satelliteOverlay);
+    state.satelliteOverlay = null;
+    const key = `${product.id}|${product.url}`;
+    if (state.satelliteStyledKey === key) {
+      state.satelliteStyled?.setOpacity(styledOpacity());
+      describeSatellite(product);
+      return;
+    }
+    const request = ++state.satelliteRequest;
+    state.satelliteStyling = true;
+    if (!state.satelliteStyled) setWeatherStatus(`Loading ${product.label.toLowerCase()} image…`);
+    try {
+      const canvas = await styledCanvas(product);
+      if (request !== state.satelliteRequest || !els.satelliteToggle.checked) return;
+      CanvasImageOverlay ||= L.ImageOverlay.extend({
+        _initImage() {
+          const image = (this._image = this._url);
+          L.DomUtil.addClass(image, "leaflet-image-layer");
+          if (this._zoomAnimated) L.DomUtil.addClass(image, "leaflet-zoom-animated");
+          if (this.options.className) L.DomUtil.addClass(image, this.options.className);
+          image.onselectstart = L.Util.falseFn;
+          image.onmousemove = L.Util.falseFn;
+        },
+      });
+      const overlay = new CanvasImageOverlay(canvas, state.satelliteMeta.bounds, {
+        pane: "satellite",
+        opacity: styledOpacity(),
+        interactive: false,
+        className: "satellite-image satellite-styled",
+        attribution: 'Satellite &copy; <a href="https://www.eumetsat.int/" target="_blank" rel="noopener noreferrer">EUMETSAT</a>',
+      }).addTo(state.map);
+      // The new picture is in place before the old one goes, so the map never flashes empty.
+      if (state.satelliteStyled) state.map.removeLayer(state.satelliteStyled);
+      state.satelliteStyled = overlay;
+      state.satelliteStyledKey = key;
+      state.satelliteStyledProduct = product.id;
+      describeSatellite(product);
+      state.forecast?.refreshPicker();
+    } catch {
+      if (request === state.satelliteRequest) setWeatherStatus(`The ${product.label.toLowerCase()} image is not available right now.`);
+    } finally {
+      if (request === state.satelliteRequest) state.satelliteStyling = false;
+    }
+  }
+
+  // Legend for Windy-style infrared: cloud-top temperature, warm (clear) on the left to the coldest tops.
+  const IR_LEGEND = { warm: 2, cold: -76, ticks: [0, -20, -40, -50, -60, -70] };
+  function renderSatelliteLegend(id) {
+    const legend = els.satelliteLegend;
+    if (id !== "ir108") {
+      legend.hidden = true;
+      return;
+    }
+    if (!legend.childElementCount) {
+      const title = document.createElement("div");
+      title.className = "map-legend-title";
+      title.textContent = "Cloud-top temperature (°C) · colder is higher";
+      const bar = document.createElement("div");
+      bar.className = "map-legend-bar";
+      const span = IR_LEGEND.warm - IR_LEGEND.cold;
+      const colours = [];
+      for (let step = 0; step <= 40; step += 1) {
+        const celsius = IR_LEGEND.warm - (span * step) / 40;
+        const [r, g, b, a] = SATELLITE_STYLES.ir108(Math.round(((30 - celsius) * 254) / 100));
+        colours.push(`rgba(${r}, ${g}, ${b}, ${Math.max(0.08, a / 255).toFixed(2)}) ${((step / 40) * 100).toFixed(1)}%`);
+      }
+      bar.style.background = `linear-gradient(90deg, ${colours.join(", ")})`;
+      const ticks = document.createElement("div");
+      ticks.className = "map-legend-ticks";
+      IR_LEGEND.ticks.forEach((celsius) => {
+        const tick = document.createElement("span");
+        tick.textContent = `${celsius}`;
+        tick.style.left = `${((IR_LEGEND.warm - celsius) / span) * 100}%`;
+        ticks.append(tick);
+      });
+      legend.append(title, bar, ticks);
+    }
+    legend.hidden = false;
+  }
+
+  // Temperature under the picker from the shown infrared picture (Web Mercator, like the map).
+  function satelliteReading(lat, lon) {
+    const canvas = state.satelliteStyled?._url;
+    if (!canvas?.grey || state.satelliteStyledProduct !== "ir108" || !els.satelliteToggle.checked) return null;
+    const [[south, west], [north, east]] = state.satelliteMeta.bounds;
+    const mercator = (value) => Math.log(Math.tan(Math.PI / 4 + (value * Math.PI) / 360));
+    const x = Math.floor(((lon - west) / (east - west)) * canvas.width);
+    const y = Math.floor(((mercator(north) - mercator(lat)) / (mercator(north) - mercator(south))) * canvas.height);
+    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return null;
+    const celsius = irCelsius(canvas.grey[y * canvas.width + x]);
+    const value = window.Atmos?.unit === "F" ? `${Math.round((celsius * 9) / 5 + 32)}°F` : `${Math.round(celsius)}°C`;
+    return { value, detail: celsius < 2 ? "Cloud top" : "Ground, no cloud" };
+  }
+
+  // Windy-style pictures carry their own transparency, so the default 70 % setting shows them fully.
+  function styledOpacity() {
+    return Math.min(1, getWeatherOpacity() / 0.7);
   }
 
   function currentSatelliteProduct() {
@@ -854,7 +1061,7 @@
     setSatellitePlayIcon(true);
     state.satelliteHold = 0;
     state.satellitePlayTimer = window.setInterval(() => {
-      if (state.satellitePending) return;
+      if (state.satellitePending || state.satelliteStyling) return;
       const product = currentSatelliteProduct();
       const list = satelliteFrames(product);
       const steps = list.filter((time, index) => time.slice(14, 16) === "00" || index === list.length - 1);
@@ -905,6 +1112,7 @@
     const opacity = getWeatherOpacity();
     state.pmdLayer?.eachLayer((layer) => layer.setOpacity(opacity));
     state.satelliteOverlay?.setOpacity(opacity);
+    state.satelliteStyled?.setOpacity(styledOpacity());
   }
 
   function getWeatherOpacity() {

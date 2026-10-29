@@ -158,6 +158,10 @@
 
 /* Colour scale */
 .map-legend { left: 12px; bottom: 80px; width: min(330px, calc(100% - 150px)); display: grid; gap: 4px; padding: 8px 12px 6px; border-radius: 11px; }
+/* The satellite legend sits above the forecast legend when both show. Its ticks are placed by value. */
+.map-legend:not([hidden]) ~ .map-sat-legend { bottom: 150px; }
+.map-sat-legend .map-legend-ticks span:first-child, .map-sat-legend .map-legend-ticks span:last-child { transform: translateX(-50%); }
+.map-sat-legend .map-legend-bar { background-color: #0b1a33; }
 .map-legend-title { font-size: 11px; font-weight: 600; color: var(--muted); }
 .map-legend-bar { height: 8px; border-radius: 5px; }
 .map-legend-ticks { position: relative; height: 14px; font-size: 10px; color: var(--muted); }
@@ -345,6 +349,7 @@
   /* The layer list opens as a sheet under the Layers button. */
   .map-rail { display: none; top: 108px; right: 8px; bottom: 72px; width: 176px; max-height: none; }
   .map-stage.is-rail-open .map-rail { display: flex; }
+  .map-legend:not([hidden]) ~ .map-sat-legend { bottom: 150px; }
   .map-legend { top: auto; bottom: 94px; left: 8px; width: min(196px, calc(100% - 16px)); gap: 2px; padding: 5px 9px 3px; }
   .map-legend-title { font-size: 10px; }
   .map-legend-bar { height: 6px; }
