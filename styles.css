@@ -70,6 +70,9 @@ h1, h2, h3 { font-family: Manrope, sans-serif; }
 /* Decorative layers never receive pointer events. */
 .atmosphere { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; background: radial-gradient(ellipse at 67% -12%, #174f8b70, transparent 57%), linear-gradient(145deg, #040b19, #07162d 47%, #061024); }
 .ambient-orb { position: absolute; border-radius: 50%; filter: blur(75px); will-change: transform; }
+/* The map covers the background: keep it still on Maps, and drop it on phones and in the app, where re-blurring it every frame halved the map's frame rate. */
+body.view-maps .atmosphere * { animation-play-state: paused; }
+.is-embed .atmosphere > :not(:first-child), .is-embed .ambient-orb { display: none; }
 .orb-one { width: 530px; height: 530px; right: -120px; top: -230px; background: radial-gradient(circle, #168ddd6b, #0879d01c 62%, transparent 72%); animation: ambientFloat 25s ease-in-out infinite alternate; }
 .orb-two { width: 560px; height: 560px; left: 13%; top: 45%; background: radial-gradient(circle, #1762c442, #044ea920 55%, transparent 73%); animation: ambientFloat 31s ease-in-out -12s infinite alternate-reverse; }
 .orb-three { width: 330px; height: 330px; right: 22%; top: 28%; background: radial-gradient(circle, #32b8d92e, transparent 70%); animation: ambientFloat 24s ease-in-out -8s infinite alternate; }
@@ -440,6 +443,7 @@ h1, h2, h3 { font-family: Manrope, sans-serif; }
   .orb-one { width: 320px; height: 320px; right: -100px; top: -60px; }
   .orb-two { width: 350px; height: 350px; left: -170px; }
   .orb-three { display: none; }
+  body.view-maps .ambient-orb, body.view-maps .ambient-waves, body.view-maps .ambient-grain { display: none; }
 }
 @media (max-width: 480px) {
   .topbar { padding: 15px 16px; gap: 10px; }
