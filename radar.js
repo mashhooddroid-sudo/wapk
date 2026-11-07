@@ -40,6 +40,8 @@
 
   const els = {
     stage: document.getElementById("radarMapStage"),
+    map2dButton: document.getElementById("map2dButton"),
+    map3dButton: document.getElementById("map3dButton"),
     layersButton: document.getElementById("mapLayersButton"),
     mapSearchForm: document.getElementById("mapSearchForm"),
     mapSearchInput: document.getElementById("mapSearchInput"),
@@ -398,7 +400,17 @@
     // Place names stay readable above the forecast colours and wind.
     state.map.createPane("mapLabels").style.zIndex = "390";
     state.map.getPane("mapLabels").style.pointerEvents = "none";
+    // The 3D globe sits over the flat map and shows the same forecast picture and wind (globe.js).
+    state.globe = window.WapkGlobe?.attach(els.stage, {
+      onPick: (lat, lon) => {
+        state.forecast?.setPicker(lat, lon);
+        state.pointForecast?.open(lat, lon);
+      },
+    }) || null;
+    els.map2dButton?.addEventListener("click", () => setGlobeView(false));
+    els.map3dButton?.addEventListener("click", () => setGlobeView(true));
     state.forecast = window.WapkForecast?.attach(state.map, {
+      onDraw: (draw) => state.globe?.setDraw(draw),
       url: FORECAST_DATA_URL,
       theme: state.theme,
       getUnit: () => window.Atmos?.unit,
@@ -1476,6 +1488,29 @@
 
   function setWeatherStatus(message) {
     els.weatherLayerStatus.textContent = message;
+  }
+
+  // 2D is the Leaflet map; 3D is the globe over it, opened at the same place. Satellite, radar and lightning
+  // are drawn on the flat map only for now, which the toast says.
+  async function setGlobeView(globe) {
+    if (!state.globe || globe === state.globe.isVisible()) return;
+    els.map2dButton.setAttribute("aria-pressed", String(!globe));
+    els.map3dButton.setAttribute("aria-pressed", String(globe));
+    els.stage.classList.toggle("is-globe", globe);
+    if (globe) {
+      const center = state.map.getCenter();
+      try {
+        await state.globe.show({ center: [center.lng, center.lat], zoom: Math.max(1.2, Math.min(state.map.getZoom() - 1, 2.3)) });
+        showToast("3D globe: forecast layers and wind. Satellite, radar and lightning are on the 2D map.");
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "The 3D globe could not load.");
+        setGlobeView(false);
+      }
+      return;
+    }
+    const view = state.globe.hide();
+    state.map.invalidateSize();
+    if (view) state.map.setView([view.lat, view.lon], Math.max(state.map.getMinZoom(), Math.round(view.zoom + 1)), { animate: false });
   }
 
   function setLayersOpen(open) {

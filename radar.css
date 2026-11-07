@@ -125,7 +125,7 @@
 .satbar-time { font-size: 11.5px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Layer rail */
-.map-rail { top: 12px; right: 12px; width: 146px; max-height: calc(100% - 96px); overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 14px; }
+.map-rail { top: 12px; right: 12px; width: 146px; max-height: calc(100% - 172px); overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 14px; }
 .rail-group { display: grid; gap: 2px; padding-top: 6px; border-top: 1px solid var(--line); transition: opacity .2s; }
 .rail-group.is-off { opacity: .45; }
 .rail-item { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 9px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 500 12px/1.2 'DM Sans', sans-serif; text-align: left; cursor: pointer; }
@@ -185,6 +185,22 @@
 
 /* Leaflet controls sit above the timeline */
 .map-stage .leaflet-bottom { bottom: 74px; }
+/* 2D / 3D switch, above the zoom buttons; the 3D globe (globe.js) covers the flat map under the controls. */
+.map-dimension { position: absolute; z-index: 12; right: 58px; bottom: 80px; display: flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--map-glass); border: 1px solid var(--line); box-shadow: 0 10px 28px #00112a40; }
+.map-dimension button { min-width: 34px; height: 28px; padding: 0 6px; border: 0; border-radius: 7px; background: none; color: var(--ink); font: 700 12px/1 'Manrope', system-ui, sans-serif; cursor: pointer; }
+.map-dimension button[aria-pressed='true'] { color: #fff; background: var(--map-active); }
+/* MapLibre's stylesheet makes its container position: relative, so this needs the extra specificity. */
+.map-stage .globe-map { position: absolute; inset: 0; z-index: 5; background: #030a17; }
+.globe-map[hidden] { display: none; }
+/* Leaflet's panes stack above anything else in the stage, so the flat map is hidden while the globe shows. */
+.map-stage.is-globe .leaflet-container { visibility: hidden; }
+/* Radar and satellite are not on the globe yet, so their legends go too. */
+.map-stage.is-globe #radarRadarLegend, .map-stage.is-globe #radarSatelliteLegend { display: none; }
+.globe-map .maplibregl-canvas-container { position: absolute; inset: 0; z-index: 1; }
+.globe-particles { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.globe-map .maplibregl-control-container { position: relative; z-index: 3; }
+.globe-map .maplibregl-ctrl-bottom-right { bottom: 74px; }
+.globe-map .maplibregl-ctrl-bottom-left { bottom: 74px; }
 .radar-map .leaflet-bar { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; box-shadow: 0 8px 22px #00112a2e; }
 .radar-map .leaflet-bar a { background: var(--popover); color: var(--ink); border-color: var(--line); }
 .radar-map .leaflet-bar a:hover { background: var(--hover); }
@@ -365,6 +381,9 @@
   .map-stage .leaflet-bottom { bottom: 92px; }
   .radar-map .leaflet-control-attribution { max-width: 44vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 8.5px; }
   .map-stage .leaflet-control-zoom { display: none; }
+  .map-dimension { right: 8px; bottom: 70px; }
+  .globe-map .maplibregl-ctrl-group { display: none; }
+  .globe-map .maplibregl-ctrl-bottom-right, .globe-map .maplibregl-ctrl-bottom-left { bottom: 62px; }
   .lightning-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 480px) {

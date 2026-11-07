@@ -416,6 +416,12 @@ def build(out, steps, published_url=None):
         if aqi is not None:
             write("aqi", index, aqi[step] if aqi[step] is not None else empty)
 
+    fields = {name: spec for name, spec in FIELDS.items() if name != "aqi"}
+    if aqi is not None:
+        covered = [index for index, step in enumerate(steps) if aqi[step] is not None]
+        if covered:
+            fields["aqi"] = {**FIELDS["aqi"], "lastStep": covered[-1]}
+
     meta = {
         "source": "ECMWF IFS open data",
         "model": "IFS 0.25°",
@@ -427,8 +433,9 @@ def build(out, steps, published_url=None):
         "grid": grid,
         "times": [int((run.replace(tzinfo=dt.timezone.utc) + dt.timedelta(hours=step)).timestamp()) for step in steps],
         "missing": MISSING,
-        # Without AQI (Open-Meteo down) the field is left out, so the map hides the layer.
-        "fields": FIELDS if aqi is not None else {name: spec for name, spec in FIELDS.items() if name != "aqi"},
+        # Without AQI (Open-Meteo down) the field is left out, so the map hides the layer. With it, lastStep is
+        # the last step CAMS covers, so the map's time slider stops there for Air quality.
+        "fields": fields,
         "path": f"runs/{run_id}/{{field}}/{{step}}.bin",
     }
     with open(os.path.join(out, "latest.json"), "w", encoding="utf-8") as handle:

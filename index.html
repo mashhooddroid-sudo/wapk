@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261029-48">
-  <link rel="stylesheet" href="radar.css?v=20261107-49">
+  <link rel="stylesheet" href="radar.css?v=20261107-50">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -163,6 +163,7 @@
           <form id="mapSearchForm" class="map-search" role="search" autocomplete="off"><span data-icon="search"></span><input id="mapSearchInput" type="search" placeholder="Search location" aria-label="Search location" aria-expanded="false" aria-controls="mapSearchResults"><div id="mapSearchResults" class="map-search-results" role="listbox" hidden></div></form>
         </div>
         <button id="mapLayersButton" class="map-layers-button" type="button" aria-expanded="false" aria-controls="mapRail" aria-label="Map layers"><span data-icon="layers"></span></button>
+        <div class="map-dimension" role="group" aria-label="Map view"><button id="map2dButton" type="button" aria-pressed="true" title="Flat map">2D</button><button id="map3dButton" type="button" aria-pressed="false" title="3D globe">3D</button></div>
 
         <div id="radarSatelliteBar" class="map-satbar" hidden>
           <button id="radarSatellitePlay" class="satbar-play" type="button" aria-label="Play the last 24 hours of satellite images"><span data-icon="play"></span></button>
@@ -277,10 +278,11 @@
   <script src="icons.js?v=20261029-43"></script>
   <script src="weather-logic.js?v=20261025-1"></script>
   <script src="app.js?v=20261029-43"></script>
-  <script src="forecast.js?v=20261107-47"></script>
-  <script src="radar.js?v=20261107-67"></script>
+  <script src="forecast.js?v=20261107-48"></script>
+  <script src="globe.js?v=20261107-1"></script>
+  <script src="radar.js?v=20261107-68"></script>
   <script src="imdradar.js?v=20261107-67"></script>
-  <script src="pointforecast.js?v=20261107-47"></script>
+  <script src="pointforecast.js?v=20261107-48"></script>
   <script src="health.js?v=20261028-8"></script>
   <script src="views.js?v=20261029-10"></script>
   <script src="effects.js?v=glass-1"></script>

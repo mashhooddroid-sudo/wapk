@@ -108,6 +108,8 @@
     // EPA bands, blended: good green, moderate yellow, then orange, red, purple and maroon.
     aqi: {
       label: "Air quality", type: "Air quality (US AQI)", unit: "US AQI", short: "AQI", field: "aqi", opacity: 0.7, ticks: [0, 50, 100, 150, 200, 300, 500],
+      // CAMS reaches 5 days; the published field's lastStep says exactly where, this is the fallback.
+      maxHours: 120,
       note: "Air quality is the US AQI from the CAMS forecast and reaches about 4–5 days ahead: 0–50 good, 51–100 moderate, 101–150 unhealthy for sensitive groups, 151–200 unhealthy, 201–300 very unhealthy, above 300 hazardous.",
       stops: [[0, "#00c853"], [25, "#00e400"], [75, "#ffff00"], [125, "#ff7e00"], [175, "#ff0000"], [250, "#8f3f97"], [400, "#7e0023"], [500, "#4a0014"]],
     },
@@ -394,12 +396,12 @@
         meta.lastHour = meta.offsets[meta.offsets.length - 1];
         meta.decoders = Object.fromEntries(Object.entries(meta.fields).map(([name, spec]) => [name, decodeTable(spec, meta.missing)]));
         state.meta = meta;
-        els.slider.max = String(meta.lastHour);
         // Keep the same clock time across refreshes; otherwise start at the hour closest to now.
         const target = previousTime ?? Date.now() / 1000;
         state.hour = Math.min(meta.lastHour, Math.max(0, Math.round((target - meta.times[0]) / 3600)));
+        state.lastHour = null;
+        applyTimeLimit();
         els.slider.value = String(state.hour);
-        renderTicks();
         render();
       } catch (error) {
         setStatus(`The forecast could not load: ${error instanceof Error ? error.message : "unknown error"}.${state.meta ? " Showing the last loaded forecast." : ""}`);
@@ -530,8 +532,28 @@
       els.bar.hidden = !state.enabled || !state.meta;
     }
 
+    // Layers whose data ends before the week does (Air quality, about 5 days) shorten the timeline to it.
+    function applyTimeLimit() {
+      const meta = state.meta;
+      if (!meta) return;
+      const layer = state.enabled && hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
+      const spec = typeof layer?.field === "string" ? meta.fields[layer.field] : null;
+      let limit = meta.lastHour;
+      if (Number.isInteger(spec?.lastStep)) limit = meta.offsets[Math.min(spec.lastStep, meta.offsets.length - 1)];
+      else if (layer?.maxHours) limit = meta.offsets.filter((hour) => hour <= layer.maxHours).pop() ?? meta.lastHour;
+      if (limit === state.lastHour) return;
+      state.lastHour = limit;
+      els.slider.max = String(limit);
+      if (state.hour > limit) {
+        state.hour = limit;
+        els.slider.value = String(limit);
+      }
+      renderTicks();
+    }
+
     async function render() {
       syncControls();
+      applyTimeLimit();
       const layer = state.meta && hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
       const showWind = els.wind.checked;
       const on = state.enabled && state.active && Boolean(state.meta) && (Boolean(layer) || showWind);
@@ -614,6 +636,21 @@
         map.removeLayer(particles);
       }
 
+      // The 3D globe (globe.js) shows the same colour picture and wind as this map.
+      const [globeU, globeV] = windFields();
+      options.onDraw?.({
+        canvas: layer ? colorCanvas : null,
+        bounds: layer ? state.colorOverlay.getBounds() : null,
+        opacity: layer?.opacity || 0.6,
+        wind: showWind ? (lats, lons) => {
+          const plan = planFor(state.meta.grid, lats, lons);
+          return { u: applyPlan(plan, data[globeU]), v: applyPlan(plan, data[globeV]) };
+        } : null,
+        windColor: (layer && !layer.isCloud) || state.theme === "dark" ? "rgba(255,255,255,0.85)" : "rgba(16,40,72,0.8)",
+        speedScale: WIND_LEVELS[level].speed,
+        particleStyle,
+      });
+
       renderLegend();
       renderTime();
       const run = new Date(state.meta.run);
@@ -644,6 +681,7 @@
       if (map.hasLayer(particles)) map.removeLayer(particles);
       if (map.hasLayer(symbols)) map.removeLayer(symbols);
       if (map.hasLayer(isobars)) map.removeLayer(isobars);
+      options.onDraw?.(null);
     }
 
     function renderLegend() {
@@ -702,12 +740,13 @@
     function renderTicks() {
       const meta = state.meta;
       els.ticks.replaceChildren();
-      const percent = (hour) => `${(hour / meta.lastHour) * 100}%`;
+      const lastHour = state.lastHour ?? meta.lastHour;
+      const percent = (hour) => `${(hour / lastHour) * 100}%`;
       // A week of "28 Wed" labels does not fit a phone-width bar, so narrow bars show just the weekday.
-      const narrow = els.ticks.clientWidth > 0 && els.ticks.clientWidth / (meta.lastHour / 24) < 64;
+      const narrow = els.ticks.clientWidth > 0 && els.ticks.clientWidth / (lastHour / 24) < 64;
       const dayFormat = new Intl.DateTimeFormat(undefined, narrow ? { weekday: "short", timeZone: API_TIMEZONE } : { weekday: "short", day: "numeric", timeZone: API_TIMEZONE });
       const hourFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: API_TIMEZONE });
-      for (let hour = 0; hour <= meta.lastHour; hour += 1) {
+      for (let hour = 0; hour <= lastHour; hour += 1) {
         const time = new Date((meta.times[0] + hour * 3600) * 1000);
         const isMidnight = hourFormat.format(time) === "00";
         if (!isMidnight && !meta.offsets.includes(hour)) continue;
@@ -718,7 +757,7 @@
         els.ticks.append(tick);
       }
       const now = (Date.now() / 1000 - meta.times[0]) / 3600;
-      if (now >= 0 && now <= meta.lastHour) {
+      if (now >= 0 && now <= lastHour) {
         const marker = document.createElement("span");
         marker.className = "timeline-now";
         marker.style.left = percent(now);
@@ -733,7 +772,7 @@
       const relative = offset === 0 ? "now" : offset > 0 ? `+${offset} h` : `${offset} h`;
       els.time.textContent = `${new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: API_TIMEZONE }).format(new Date(ms))} · ${relative}`;
       // Centre the bubble over the handle, but keep it inside the bar at either end.
-      const fraction = state.hour / state.meta.lastHour;
+      const fraction = state.hour / (state.lastHour ?? state.meta.lastHour);
       els.time.style.left = `${fraction * 100}%`;
       els.time.style.transform = `translateX(${fraction < 0.12 ? -10 : fraction > 0.88 ? -90 : -50}%)`;
       els.slider.setAttribute("aria-valuetext", formatTime(ms));
@@ -742,15 +781,16 @@
 
     function startPlayback() {
       if (!state.meta || !state.enabled) return;
-      if (state.hour >= state.meta.lastHour) state.hour = 0;
+      const lastHour = () => state.lastHour ?? state.meta.lastHour;
+      if (state.hour >= lastHour()) state.hour = 0;
       setPlayIcon(true);
       state.playTimer = setInterval(() => {
-        if (state.hour >= state.meta.lastHour) {
+        if (state.hour >= lastHour()) {
           stopPlayback();
           return;
         }
         // A week plays in 3-hour jumps so it takes about 25 s; shorter forecasts go hour by hour.
-        state.hour = Math.min(state.meta.lastHour, state.hour + (state.meta.lastHour > 72 ? 3 : 1));
+        state.hour = Math.min(lastHour(), state.hour + (lastHour() > 72 ? 3 : 1));
         els.slider.value = String(state.hour);
         render();
       }, PLAY_STEP_MS);
@@ -815,7 +855,7 @@
     function setTimeTo(ms) {
       if (!state.meta) return;
       stopPlayback();
-      state.hour = Math.min(state.meta.lastHour, Math.max(0, Math.round((ms / 1000 - state.meta.times[0]) / 3600)));
+      state.hour = Math.min(state.lastHour ?? state.meta.lastHour, Math.max(0, Math.round((ms / 1000 - state.meta.times[0]) / 3600)));
       els.slider.value = String(state.hour);
       render();
     }
