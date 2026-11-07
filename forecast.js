@@ -11,6 +11,9 @@
   const COLOR_WIDTH = 860;
   const FIELD_STRIDE = 4;
   const PARTICLE_MAX_AGE = 90;
+  // Windy-style animation settings (Map settings → Wind animation), each a multiplier of the default look.
+  const PARTICLE_STYLE_KEY = "wapk.particleStyle";
+  const PARTICLE_STYLE_DEFAULT = { speed: 1, length: 1, thickness: 1, density: 1 };
   const ISOBAR_STEP_HPA = 4;
   // Decoded field-steps kept in memory (about 300 KB each).
   const CACHE_LIMIT = 80;
@@ -182,6 +185,7 @@
 
     const particles = createParticleLayer({ pane: "forecastWind", attribution: ATTRIBUTION });
     const symbols = createSymbolLayer({ pane: "forecastSymbols" });
+    const isobars = createIsobarLayer({ pane: "forecastSymbols" });
     // The colour field is drawn into one canvas placed on the map like an image, so changing the hour
     // repaints pixels instead of encoding a new picture and swapping map layers.
     const colorCanvas = document.createElement("canvas");
@@ -225,6 +229,34 @@
       savePreferences();
       render();
     });
+    const particleStyle = readParticleStyle();
+    const particleInputs = [...document.querySelectorAll("[data-particle]")];
+    const showParticleStyle = () => particleInputs.forEach((input) => {
+      input.value = particleStyle[input.dataset.particle];
+      const label = document.querySelector(`[data-particle-value="${input.dataset.particle}"]`);
+      if (label) label.textContent = `${Number(input.value).toFixed(1)}×`;
+    });
+    const applyParticleStyle = () => {
+      showParticleStyle();
+      particles.setStyle(particleStyle);
+      if (map.hasLayer(particles)) particles.reset();
+      try {
+        localStorage.setItem(PARTICLE_STYLE_KEY, JSON.stringify(particleStyle));
+      } catch {
+        // The settings still apply for this visit when browser storage is unavailable.
+      }
+    };
+    particleInputs.forEach((input) => input.addEventListener("input", () => {
+      particleStyle[input.dataset.particle] = Number(input.value);
+      applyParticleStyle();
+    }));
+    document.getElementById("radarParticleReset")?.addEventListener("click", () => {
+      Object.assign(particleStyle, PARTICLE_STYLE_DEFAULT);
+      applyParticleStyle();
+    });
+    showParticleStyle();
+    particles.setStyle(particleStyle);
+
     els.wind.addEventListener("change", () => {
       savePreferences();
       render();
@@ -548,6 +580,15 @@
         map.removeLayer(symbols);
       }
 
+      if (layer?.isobars) {
+        const pair = smoothPair(data[layer.field], state.meta.grid);
+        isobars.setSource((lats, lons) => applyPlan(planFor(state.meta.grid, lats, lons), pair), state.theme);
+        if (!map.hasLayer(isobars)) isobars.addTo(map);
+        else isobars.redraw();
+      } else if (map.hasLayer(isobars)) {
+        map.removeLayer(isobars);
+      }
+
       if (showWind) {
         // White streaks read on colour and on the dark map; the light street map needs dark ones.
         const onColour = layer && !layer.isCloud;
@@ -594,6 +635,7 @@
       }
       if (map.hasLayer(particles)) map.removeLayer(particles);
       if (map.hasLayer(symbols)) map.removeLayer(symbols);
+      if (map.hasLayer(isobars)) map.removeLayer(isobars);
     }
 
     function renderLegend() {
@@ -1033,7 +1075,6 @@
       const soft = mask ? Math.min(1, Math.max(0, (mask[index] - 0.25) / 0.3)) : 1;
       pixels[pixel + 3] = colours.table[entry + 3] * edge[index] * soft;
     }
-    if (layer.isobars) drawIsobars(image, values, width, height, theme);
     context.putImageData(image, 0, 0);
     return geometry.bounds;
   }
@@ -1064,27 +1105,6 @@
       ? { hour: "numeric", minute: "2-digit", timeZone: API_TIMEZONE, timeZoneName: "short" }
       : { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: API_TIMEZONE, timeZoneName: "short" };
     return new Intl.DateTimeFormat(undefined, options).format(new Date(ms));
-  }
-
-  // Marks pixels where the pressure crosses a multiple of ISOBAR_STEP_HPA, giving contour lines.
-  function drawIsobars(image, values, width, height, theme) {
-    const line = theme === "light" ? [24, 38, 60] : [255, 255, 255];
-    const band = (value) => Math.floor(value / ISOBAR_STEP_HPA);
-    for (let row = 0; row < height - 1; row += 1) {
-      for (let col = 0; col < width - 1; col += 1) {
-        const here = values[row * width + col];
-        if (Number.isNaN(here)) continue;
-        const right = values[row * width + col + 1];
-        const below = values[(row + 1) * width + col];
-        const crosses = (!Number.isNaN(right) && band(right) !== band(here)) || (!Number.isNaN(below) && band(below) !== band(here));
-        if (!crosses) continue;
-        const index = (row * width + col) * 4;
-        image.data[index] = line[0];
-        image.data[index + 1] = line[1];
-        image.data[index + 2] = line[2];
-        image.data[index + 3] = Math.max(image.data[index + 3], 230);
-      }
-    }
   }
 
   function colorLookup(rawStops, transparentBelow = -Infinity) {
@@ -1222,6 +1242,272 @@
     return new SymbolLayerClass(options);
   }
 
+  function readParticleStyle() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PARTICLE_STYLE_KEY) || "{}");
+      const style = { ...PARTICLE_STYLE_DEFAULT };
+      Object.keys(style).forEach((key) => {
+        if (Number.isFinite(saved[key]) && saved[key] > 0) style[key] = saved[key];
+      });
+      return style;
+    } catch {
+      return { ...PARTICLE_STYLE_DEFAULT };
+    }
+  }
+
+  // ── Isobars, Windy-style ────────────────────────────────────────────────────
+  // Pressure is sampled on a fine screen grid for the current view and contoured with marching squares, so the
+  // lines are smooth at every zoom. Numbers sit along the lines, and H and L mark highs and lows that stand out
+  // from their surroundings. Redrawn after every pan, zoom or hour, like the weather symbols.
+  const ISOBAR_STRIDE = 6;
+  const ISOBAR_SMOOTH_CELLS = 4;
+  const ISOBAR_LABEL_GAP = 210;
+  const PRESSURE_CENTRE_RADIUS = 150;
+  let IsobarLayerClass = null;
+
+  // Sea-level pressure is noisy over high ground (it is extrapolated down through the mountains), which would
+  // give squiggles and stray H and L marks. Like Windy, the isobars use a smoothed copy: two box blurs of
+  // ISOBAR_SMOOTH_CELLS grid cells (about 1°) each way, skipping cells without data. Cached per step.
+  const smoothedFields = new WeakMap();
+  function smoothField(values, grid) {
+    if (!values) return values;
+    if (smoothedFields.has(values)) return smoothedFields.get(values);
+    const { nx, ny } = grid;
+    let source = values;
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (const horizontal of [true, false]) {
+        const out = new Float32Array(nx * ny);
+        for (let row = 0; row < ny; row += 1) {
+          for (let col = 0; col < nx; col += 1) {
+            let sum = 0;
+            let count = 0;
+            for (let offset = -ISOBAR_SMOOTH_CELLS; offset <= ISOBAR_SMOOTH_CELLS; offset += 1) {
+              const c = horizontal ? col + offset : col;
+              const r = horizontal ? row : row + offset;
+              if (c < 0 || r < 0 || c >= nx || r >= ny) continue;
+              const value = source[r * nx + c];
+              if (Number.isNaN(value)) continue;
+              sum += value;
+              count += 1;
+            }
+            out[row * nx + col] = Number.isNaN(source[row * nx + col]) || !count ? NaN : sum / count;
+          }
+        }
+        source = out;
+      }
+    }
+    smoothedFields.set(values, source);
+    return source;
+  }
+  function smoothPair(pair, grid) {
+    return pair && { a: smoothField(pair.a, grid), b: smoothField(pair.b, grid), weight: pair.weight };
+  }
+
+  function createIsobarLayer(options) {
+    IsobarLayerClass ||= L.Layer.extend({
+      initialize(layerOptions) {
+        L.setOptions(this, layerOptions);
+        this._sample = null;
+        this._theme = "dark";
+      },
+
+      onAdd(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create("canvas", "forecast-isobars");
+        this.getPane().appendChild(this._canvas);
+        map.on("moveend resize", this.redraw, this);
+        map.on("movestart", this._clear, this);
+        this.redraw();
+      },
+
+      onRemove(map) {
+        map.off("moveend resize", this.redraw, this);
+        map.off("movestart", this._clear, this);
+        this._canvas.remove();
+        this._canvas = null;
+      },
+
+      // `sample(lats, lons)` returns sea-level pressure in hPa for those points (NaN outside the forecast).
+      setSource(sample, theme) {
+        this._sample = sample;
+        this._theme = theme;
+      },
+
+      _clear() {
+        this._canvas?.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
+      },
+
+      redraw() {
+        if (!this._map || !this._canvas || !this._sample) return;
+        const map = this._map;
+        const size = map.getSize();
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        this._canvas.width = Math.round(size.x * ratio);
+        this._canvas.height = Math.round(size.y * ratio);
+        this._canvas.style.width = `${size.x}px`;
+        this._canvas.style.height = `${size.y}px`;
+        L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0, 0]));
+        const context = this._canvas.getContext("2d");
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+        const columns = Math.ceil(size.x / ISOBAR_STRIDE) + 1;
+        const rows = Math.ceil(size.y / ISOBAR_STRIDE) + 1;
+        const viewKey = `${map.getBounds().toBBoxString()}|${map.getZoom()}|${columns}x${rows}`;
+        if (this._viewKey !== viewKey) {
+          this._viewKey = viewKey;
+          this._lats = new Float64Array(columns * rows);
+          this._lons = new Float64Array(columns * rows);
+          for (let row = 0; row < rows; row += 1) {
+            for (let col = 0; col < columns; col += 1) {
+              const point = map.containerPointToLatLng([col * ISOBAR_STRIDE, row * ISOBAR_STRIDE]);
+              this._lats[row * columns + col] = point.lat;
+              this._lons[row * columns + col] = point.lng;
+            }
+          }
+        }
+        const values = this._sample(this._lats, this._lons);
+        const light = this._theme === "light";
+        const segments = this._contour(values, columns, rows);
+
+        // Lines: thin, with every 20 hPa a little stronger, as on Windy.
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        for (const major of [false, true]) {
+          context.beginPath();
+          for (const [level, x1, y1, x2, y2] of segments) {
+            if ((level % 20 === 0) !== major) continue;
+            context.moveTo(x1, y1);
+            context.lineTo(x2, y2);
+          }
+          context.strokeStyle = light ? `rgba(20, 34, 56, ${major ? 0.85 : 0.6})` : `rgba(255, 255, 255, ${major ? 0.9 : 0.6})`;
+          context.lineWidth = major ? 1.6 : 1;
+          context.stroke();
+        }
+        this._labels(context, segments, size, light);
+        this._centres(context, values, columns, rows, size, light);
+      },
+
+      // Marching squares over the screen grid: one short segment per cell crossing per level.
+      _contour(values, columns, rows) {
+        const segments = [];
+        const at = (col, row) => values[row * columns + col];
+        for (let row = 0; row < rows - 1; row += 1) {
+          for (let col = 0; col < columns - 1; col += 1) {
+            const a = at(col, row);
+            const b = at(col + 1, row);
+            const c = at(col + 1, row + 1);
+            const d = at(col, row + 1);
+            if (Number.isNaN(a) || Number.isNaN(b) || Number.isNaN(c) || Number.isNaN(d)) continue;
+            const low = Math.min(a, b, c, d);
+            const high = Math.max(a, b, c, d);
+            const x = col * ISOBAR_STRIDE;
+            const y = row * ISOBAR_STRIDE;
+            for (let level = Math.ceil(low / ISOBAR_STEP_HPA) * ISOBAR_STEP_HPA; level <= high; level += ISOBAR_STEP_HPA) {
+              if (level === high) continue;
+              // Crossing points on the cell's four edges (top, right, bottom, left).
+              const points = [];
+              const edge = (v1, v2, x1, y1, x2, y2) => {
+                if ((v1 < level) === (v2 < level)) return;
+                const t = (level - v1) / (v2 - v1);
+                points.push([x1 + (x2 - x1) * t, y1 + (y2 - y1) * t]);
+              };
+              const s = ISOBAR_STRIDE;
+              edge(a, b, x, y, x + s, y);
+              edge(b, c, x + s, y, x + s, y + s);
+              edge(c, d, x + s, y + s, x, y + s);
+              edge(d, a, x, y + s, x, y);
+              if (points.length === 2) segments.push([level, ...points[0], ...points[1]]);
+              else if (points.length === 4) {
+                // Saddle: pair the crossings by the cell's middle value.
+                const middleLow = (a + b + c + d) / 4 < level;
+                const aLow = a < level;
+                if (middleLow === aLow) {
+                  segments.push([level, ...points[0], ...points[1]], [level, ...points[2], ...points[3]]);
+                } else {
+                  segments.push([level, ...points[0], ...points[3]], [level, ...points[1], ...points[2]]);
+                }
+              }
+            }
+          }
+        }
+        return segments;
+      },
+
+      // Pressure numbers along the lines, spread out so they never crowd, on a small dark tag.
+      _labels(context, segments, size, light) {
+        const placed = [];
+        const margin = 36;
+        context.font = "600 10px 'DM Sans', system-ui, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        for (let index = 0; index < segments.length; index += 7) {
+          const [level, x1, y1, x2, y2] = segments[index];
+          const x = (x1 + x2) / 2;
+          const y = (y1 + y2) / 2;
+          if (x < margin || y < margin || x > size.x - margin || y > size.y - margin) continue;
+          if (placed.some(([px, py, plevel]) => Math.hypot(px - x, py - y) < (plevel === level ? ISOBAR_LABEL_GAP * 1.6 : ISOBAR_LABEL_GAP * 0.45))) continue;
+          placed.push([x, y, level]);
+          const text = String(level);
+          const width = context.measureText(text).width + 8;
+          context.fillStyle = light ? "rgba(255, 255, 255, 0.88)" : "rgba(10, 24, 46, 0.78)";
+          context.beginPath();
+          if (context.roundRect) context.roundRect(x - width / 2, y - 7.5, width, 15, 4);
+          else context.rect(x - width / 2, y - 7.5, width, 15);
+          context.fill();
+          context.fillStyle = light ? "#14223a" : "#ffffff";
+          context.fillText(text, x, y + 0.5);
+        }
+      },
+
+      // H and L where the pressure is the highest or lowest within PRESSURE_CENTRE_RADIUS pixels and stands
+      // at least 2 hPa clear of the edge of that circle, so flat areas don't get letters.
+      _centres(context, values, columns, rows, size, light) {
+        const reach = Math.round(PRESSURE_CENTRE_RADIUS / ISOBAR_STRIDE);
+        const step = 2;
+        const found = [];
+        for (let row = reach; row < rows - reach; row += step) {
+          for (let col = reach; col < columns - reach; col += step) {
+            const here = values[row * columns + col];
+            if (Number.isNaN(here)) continue;
+            let isHigh = true;
+            let isLow = true;
+            let lowest = here;
+            let highest = here;
+            for (let dy = -reach; dy <= reach && (isHigh || isLow); dy += step) {
+              for (let dx = -reach; dx <= reach; dx += step) {
+                if (dx * dx + dy * dy > reach * reach || (!dx && !dy)) continue;
+                const value = values[(row + dy) * columns + col + dx];
+                if (Number.isNaN(value)) continue;
+                if (value >= here) isHigh = false;
+                if (value <= here) isLow = false;
+                lowest = Math.min(lowest, value);
+                highest = Math.max(highest, value);
+              }
+            }
+            if (isHigh && here - lowest >= 2) found.push(["H", col, row, here]);
+            else if (isLow && highest - here >= 2) found.push(["L", col, row, here]);
+          }
+        }
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        for (const [letter, col, row, value] of found) {
+          const x = col * ISOBAR_STRIDE;
+          const y = row * ISOBAR_STRIDE;
+          context.shadowColor = light ? "rgba(255, 255, 255, 0.9)" : "rgba(0, 10, 30, 0.85)";
+          context.shadowBlur = 6;
+          context.font = "800 22px 'Manrope', system-ui, sans-serif";
+          context.fillStyle = letter === "H" ? (light ? "#1c4fb8" : "#9fd3ff") : (light ? "#b3202c" : "#ff9a9a");
+          context.fillText(letter, x, y - 6);
+          context.font = "650 10px 'DM Sans', system-ui, sans-serif";
+          context.fillStyle = light ? "#14223a" : "#ffffff";
+          context.fillText(String(Math.round(value)), x, y + 11);
+          context.shadowBlur = 0;
+        }
+      },
+    });
+    return new IsobarLayerClass(options);
+  }
+
   let ParticleLayerClass = null;
 
   function createParticleLayer(options) {
@@ -1237,6 +1523,7 @@
         this._color = "rgba(255,255,255,0.85)";
         this._reducedMotion = false;
         this._speedScale = 1;
+        this._style = { ...PARTICLE_STYLE_DEFAULT };
         this._frame = 0;
       },
 
@@ -1277,6 +1564,11 @@
         this._speedScale = scale;
       },
 
+      // { speed, length, thickness, density } multipliers from Map settings.
+      setStyle(style) {
+        this._style = { ...PARTICLE_STYLE_DEFAULT, ...style };
+      },
+
       stop() {
         if (this._frame) cancelAnimationFrame(this._frame);
         this._frame = 0;
@@ -1307,7 +1599,12 @@
         this._height = size.y;
 
         // Screen speed grows gently with zoom so particles stay readable at every scale.
-        const speed = 0.11 * this._speedScale * Math.pow(1.25, map.getZoom() - 5);
+        const style = this._style;
+        const speed = 0.11 * this._speedScale * style.speed * Math.pow(1.25, map.getZoom() - 5);
+        // Longer trails fade more slowly, and their particles live longer so the trail has time to grow.
+        this._fade = `rgba(0, 0, 0, ${(1 - 0.08 / style.length).toFixed(3)})`;
+        this._maxAge = Math.round(PARTICLE_MAX_AGE * Math.max(0.7, style.length));
+        this._lineWidth = 1.1 * style.thickness;
         const columns = Math.ceil(size.x / FIELD_STRIDE) + 1;
         const rows = Math.ceil(size.y / FIELD_STRIDE) + 1;
         // Sample positions depend only on the view, so changing the forecast hour reuses them.
@@ -1332,7 +1629,7 @@
         }
         this._screen = { field, columns, rows };
 
-        const count = Math.round(Math.min(3000, (size.x * size.y) / 200));
+        const count = Math.round(Math.min(3000 * this._style.density, ((size.x * size.y) / 200) * this._style.density));
         this._particles = Array.from({ length: count }, () => this._spawn({}, true));
         this._context.clearRect(0, 0, size.x, size.y);
         if (this._reducedMotion) this._drawStatic();
@@ -1342,7 +1639,7 @@
       _spawn(particle, randomAge) {
         particle.x = Math.random() * this._width;
         particle.y = Math.random() * this._height;
-        particle.age = randomAge ? Math.floor(Math.random() * PARTICLE_MAX_AGE) : 0;
+        particle.age = randomAge ? Math.floor(Math.random() * this._maxAge) : 0;
         return particle;
       },
 
@@ -1359,7 +1656,7 @@
       _step(context) {
         context.beginPath();
         for (const particle of this._particles) {
-          const velocity = particle.age < PARTICLE_MAX_AGE ? this._velocity(particle.x, particle.y) : null;
+          const velocity = particle.age < this._maxAge ? this._velocity(particle.x, particle.y) : null;
           if (!velocity) {
             this._spawn(particle, false);
             continue;
@@ -1380,11 +1677,11 @@
         const tick = () => {
           // Fade the previous frame to leave short trails behind each particle.
           context.globalCompositeOperation = "destination-in";
-          context.fillStyle = "rgba(0, 0, 0, 0.92)";
+          context.fillStyle = this._fade;
           context.fillRect(0, 0, this._width, this._height);
           context.globalCompositeOperation = "source-over";
           context.strokeStyle = this._color;
-          context.lineWidth = 1.1;
+          context.lineWidth = this._lineWidth;
           this._step(context);
           this._frame = requestAnimationFrame(tick);
         };
@@ -1395,7 +1692,7 @@
       _drawStatic() {
         const context = this._context;
         context.strokeStyle = this._color;
-        context.lineWidth = 1;
+        context.lineWidth = this._lineWidth;
         this._particles.forEach((particle) => { particle.age = 0; });
         for (let step = 0; step < 8; step += 1) this._step(context);
       },

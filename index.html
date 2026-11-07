@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20261029-48">
-  <link rel="stylesheet" href="radar.css?v=20261029-47">
+  <link rel="stylesheet" href="radar.css?v=20261107-49">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -210,6 +210,13 @@
             <button id="radarLocateButton" class="radar-button radar-wide-button" type="button"><span data-icon="location"></span>Use my current location</button>
             <div class="radar-field-heading"><label for="radarRadiusInput">Monitor radius</label><strong><span id="radarRadiusValue">25</span> km</strong></div><input id="radarRadiusInput" type="range" min="5" max="100" step="5" value="25"><div class="radar-range-labels" aria-hidden="true"><span>5 km</span><span>100 km</span></div>
           </div></details>
+          <details class="radar-control-group"><summary>Wind animation<span data-icon="chevron-right"></span></summary><div id="radarParticleSettings" class="radar-control-body">
+            <div class="radar-field-heading"><label for="radarParticleSpeed">Speed</label><strong data-particle-value="speed">1.0×</strong></div><input id="radarParticleSpeed" data-particle="speed" type="range" min="0.3" max="2.5" step="0.1" value="1">
+            <div class="radar-field-heading"><label for="radarParticleLength">Trail length</label><strong data-particle-value="length">1.0×</strong></div><input id="radarParticleLength" data-particle="length" type="range" min="0.4" max="3" step="0.1" value="1">
+            <div class="radar-field-heading"><label for="radarParticleThickness">Line thickness</label><strong data-particle-value="thickness">1.0×</strong></div><input id="radarParticleThickness" data-particle="thickness" type="range" min="0.5" max="3" step="0.1" value="1">
+            <div class="radar-field-heading"><label for="radarParticleDensity">Number of particles</label><strong data-particle-value="density">1.0×</strong></div><input id="radarParticleDensity" data-particle="density" type="range" min="0.3" max="2" step="0.1" value="1">
+            <button id="radarParticleReset" class="radar-button radar-wide-button" type="button">Reset to default</button>
+          </div></details>
           <details class="radar-control-group"><summary>Lightning &amp; base map<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
             <label class="radar-field-label" for="radarTimeFilter">Strike age at checkpoint</label><select id="radarTimeFilter"><option value="5">Last 5 minutes</option><option value="15" selected>Last 15 minutes</option><option value="60">Last 1 hour</option><option value="180">Last 3 hours</option><option value="360">Last 6 hours</option><option value="720">Last 12 hours</option><option value="1440">Last 24 hours</option><option value="all">All cached strikes</option></select>
             <label class="radar-field-label" for="radarMapTheme">Base map</label><select id="radarMapTheme"><option value="auto" selected>Match website theme</option><option value="dark">Dark contrast</option><option value="standard">Street map</option><option value="hot">Humanitarian</option></select>
@@ -224,7 +231,7 @@
           <details class="radar-control-group"><summary>Satellite<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
             <p id="radarWeatherLayerStatus" class="radar-hint" aria-live="polite">Satellite images are off. Turn on Satellite in the layer list.</p>
             <label class="radar-field-label" for="radarWeatherOpacityInput">Radar and satellite opacity</label><input id="radarWeatherOpacityInput" type="range" min="20" max="100" step="5" value="70">
-            <p class="radar-hint">Meteosat images from EUMETSAT, updated every 15 minutes. Visible, Natural colour and Convection need daylight.</p>
+            <p class="radar-hint">Meteosat images from EUMETSAT, updated every 15 minutes. At night Visible and Natural colour show infrared clouds; Convection needs daylight.</p>
           </div></details>
           <details class="radar-control-group"><summary>Updates &amp; alerts<span data-icon="chevron-right"></span></summary><div class="radar-control-body">
             <label class="radar-switch"><input id="radarAutoRefreshToggle" type="checkbox" checked><span>Refresh lightning every 15 minutes</span></label><label class="radar-switch"><input id="radarSoundToggle" type="checkbox"><span>Sound for nearby strikes</span></label><button id="radarNotificationButton" class="radar-button radar-wide-button" type="button">Enable browser alerts</button><p class="radar-hint">Updates and monitoring pause when you leave Maps.</p>
@@ -270,10 +277,10 @@
   <script src="icons.js?v=20261029-43"></script>
   <script src="weather-logic.js?v=20261025-1"></script>
   <script src="app.js?v=20261029-43"></script>
-  <script src="forecast.js?v=20261029-43"></script>
-  <script src="radar.js?v=20261029-63"></script>
-  <script src="imdradar.js?v=20261029-63"></script>
-  <script src="pointforecast.js?v=20261029-43"></script>
+  <script src="forecast.js?v=20261107-46"></script>
+  <script src="radar.js?v=20261107-67"></script>
+  <script src="imdradar.js?v=20261107-67"></script>
+  <script src="pointforecast.js?v=20261107-46"></script>
   <script src="health.js?v=20261028-8"></script>
   <script src="views.js?v=20261029-10"></script>
   <script src="effects.js?v=glass-1"></script>

@@ -361,6 +361,7 @@
     // Satellite images sit above the base map and forecast colours, below PMD radar and wind.
     state.map.createPane("satellite").style.zIndex = "320";
     state.map.getPane("satellite").style.pointerEvents = "none";
+    state.map.on("zoomend", () => syncHrvLayer());
     // PMD radar sits above the base map and satellite tiles but below the radius circle and strikes.
     state.map.createPane("pmdRadar");
     state.map.getPane("pmdRadar").style.zIndex = "350";
@@ -460,7 +461,11 @@
 
     els.pmdProduct.addEventListener("change", renderPmdRadar);
 
-    els.strikesToggle.addEventListener("click", () => setStrikesVisible(!state.strikesVisible, true));
+    els.strikesToggle.addEventListener("click", () => {
+      setStrikesVisible(!state.strikesVisible, true);
+      // Like radar and satellite, turning lightning on hides the forecast colours and wind so it shows on its own.
+      if (state.strikesVisible) state.forecast?.setEnabled(false);
+    });
 
     els.locateButton.addEventListener("click", () => {
       userGesture();
@@ -798,6 +803,7 @@
 
   function renderSatellite() {
     const pane = state.map.getPane("satellite");
+    syncHrvLayer();
     const styled = els.satelliteToggle.checked && state.satelliteMeta && SATELLITE_STYLES[currentSatelliteProduct().id];
     renderSatelliteLegend(styled ? currentSatelliteProduct().id : null);
     // Leaving a Windy-style product removes its drawn picture.
@@ -868,11 +874,12 @@
     if (state.satelliteOverlay) overlay.setOpacity(0);
   }
 
-  // ── Windy-style satellite (Infrared and Visible) ─────────────────────────
+  // ── Windy-style satellite (Infrared, Visible and Natural colour) ──────────
   // The worker's Meteosat picture is redrawn pixel by pixel: in infrared, clear ground is see-through and
-  // clouds turn whiter and more solid the colder their tops, with the coldest storm tops coloured; in visible,
-  // the dark, flat reflectance is stretched and brightened and the night side fades out. Each grey level maps
-  // to one colour (SATELLITE_STYLES), so a whole picture is one table lookup per pixel.
+  // clouds turn whiter and more solid the colder their tops, with the coldest storm tops coloured; Visible and
+  // Natural colour are drawn solid with stronger contrast, and their night side becomes dark blue ground with
+  // the infrared clouds in white. Each grey level maps to one colour (SATELLITE_STYLES), so a whole picture is
+  // one table lookup per pixel.
   //
   // EUMETSAT's infrared grey is linear in brightness temperature: 0 ≈ +30 °C, 254 ≈ −70 °C (checked against
   // the Arabian Sea at about +28 °C).
@@ -907,12 +914,30 @@
       const level = Math.round(170 + 85 * f);
       return [level, level, Math.min(255, level + 6), Math.round(255 * Math.min(1, 0.05 + 0.95 * f ** 1.1))];
     },
-    vis006: (grey) => {
-      const value = Math.min(1, Math.max(0, (grey - 6) / 190)) ** 0.6;
-      const level = Math.round(255 * value);
-      return [level, level, level, Math.round(255 * Math.min(1, value / 0.35))];
+    // Solid, with sea and ground dark and clouds white. The stored 3 km picture is first put on the sharp HRV
+    // picture's brightness scale (fitted over the whole region), so the two match where they meet.
+    vis006: (grey) => SATELLITE_STYLES.hrv(255 * Math.min(1, Math.max(0, (grey - 6) / 210)) ** 0.42),
+    // EUMETView's HRV brightness (sea ≈ 56, clear ground ≈ 100–120, clouds ≈ 175–250) to the shown grey.
+    hrv: (value) => {
+      const level = Math.round(255 * Math.min(1, Math.max(0, (value - 45) / 190)) ** 1.15);
+      return [level, level, level, 255];
+    },
+    // Natural colour: each of red, green and blue gets the same gentle stretch, drawn solid.
+    natural: (value) => {
+      const level = Math.round(255 * Math.min(1, Math.max(0, (value - 4) / 225)) ** 0.9);
+      return [level, level, level, 255];
+    },
+    // Night side of Visible and Natural colour: infrared clouds (as irPlain) over dark blue ground.
+    night: (grey) => {
+      const [level, , blue, alpha] = SATELLITE_STYLES.irPlain(grey);
+      const cloud = alpha / 255;
+      return [...NIGHT_GROUND.map((ground, channel) => Math.round(ground * (1 - cloud) + (channel === 2 ? blue : level) * cloud)), 255];
     },
   };
+  const NIGHT_GROUND = [11, 26, 51];
+  const NIGHT_GROUND_TABLE = Uint8ClampedArray.of(...NIGHT_GROUND, 255);
+  // Products drawn solid by day whose night side is filled from infrared.
+  const DAYLIGHT_PRODUCTS = new Set(["vis006", "natural"]);
   const satelliteTables = new Map();
   const styledCanvases = new Map();
   const STYLED_CACHE = 8;
@@ -928,7 +953,7 @@
   }
 
   // Loads the stored picture and redraws it with the product's colour table; recent pictures are kept for playback.
-  async function greyLevels(url, width, height) {
+  async function greyLevels(url, width, height, colour = false) {
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.decoding = "async";
@@ -940,6 +965,7 @@
     const context = canvas.getContext("2d", { willReadFrequently: true });
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (colour) return { rgb: pixels, width: canvas.width, height: canvas.height };
     const grey = new Uint8Array(pixels.length / 4);
     for (let index = 0; index < grey.length; index += 1) grey[index] = pixels[index * 4 + 1]; // Grey pictures.
     return { grey, width: canvas.width, height: canvas.height };
@@ -969,7 +995,7 @@
       const time = frames[index + offset];
       if (!time) return;
       const urls = [`${product.frameUrl}${encodeURIComponent(time)}`, smallSatelliteUrl(product.id, time)];
-      if (product.id === "vis006") urls.push(infraredUrlAt(time), smallSatelliteUrl("ir108", time));
+      if (DAYLIGHT_PRODUCTS.has(product.id)) urls.push(infraredUrlAt(time), smallSatelliteUrl("ir108", time));
       urls.filter(Boolean).forEach((url) => {
         state.satellitePrefetched ||= new Set();
         if (state.satellitePrefetched.has(url)) return;
@@ -981,7 +1007,7 @@
     });
   }
 
-  // Small copies of every stored picture of a product (and of infrared, for Visible's night side), loaded from the
+  // Small copies of every stored picture of a product (and of infrared, for the night side), loaded from the
   // worker in the background four at a time, nearest the shown time first, so dragging and playing are instant.
   function preloadSmallSatellite(id) {
     state.satelliteSmallLoaded ||= new Set();
@@ -991,7 +1017,7 @@
     const frames = satelliteFrames(product || {});
     const shown = Math.max(0, frames.indexOf(state.satelliteTime ?? frames[frames.length - 1]));
     const queue = [...new Set([...frames].sort((a, b) => Math.abs(frames.indexOf(a) - shown) - Math.abs(frames.indexOf(b) - shown))
-      .flatMap((time) => [smallSatelliteUrl(id, time), id === "vis006" ? smallSatelliteUrl("ir108", time) : null])
+      .flatMap((time) => [smallSatelliteUrl(id, time), DAYLIGHT_PRODUCTS.has(id) ? smallSatelliteUrl("ir108", time) : null])
       .filter(Boolean))];
     const next = () => {
       if (!queue.length || !els.satelliteToggle.checked) return;
@@ -1003,26 +1029,32 @@
     for (let lane = 0; lane < 4; lane += 1) next();
   }
 
-  // The infrared picture of the same moment, for the night side of Visible.
+  // The infrared picture of the same moment, for the night side of Visible and Natural colour.
   function infraredUrlAt(time) {
     const infrared = state.satelliteMeta?.products.find((item) => item.id === "ir108");
     if (!infrared?.frames?.includes(time)) return null;
     return `${infrared.frameUrl}${encodeURIComponent(time)}`;
   }
 
-  // How much daylight each pixel has (0 night … 1 day), from the sun's height at the picture's time: Visible
-  // fades into infrared between 3° below and 7° above the horizon.
-  function daylightWeights(time, width, height) {
-    const ms = Date.parse(time);
-    const days = (ms - Date.UTC(2000, 0, 1, 12)) / 86_400_000;
+  // How much daylight each pixel has (0 night … 1 day), from the sun's height at the picture's time: Visible and
+  // Natural colour fade into the night picture between 3° below and 7° above the horizon.
+  function sunPosition(time) {
+    const days = (Date.parse(time) - Date.UTC(2000, 0, 1, 12)) / 86_400_000;
     const radians = Math.PI / 180;
     const meanAnomaly = (357.529 + 0.98560028 * days) * radians;
     const meanLongitude = 280.459 + 0.98564736 * days;
     const longitude = (meanLongitude + 1.915 * Math.sin(meanAnomaly) + 0.02 * Math.sin(2 * meanAnomaly)) * radians;
     const obliquity = (23.439 - 0.00000036 * days) * radians;
-    const rightAscension = Math.atan2(Math.cos(obliquity) * Math.sin(longitude), Math.cos(longitude)) / radians;
-    const declination = Math.asin(Math.sin(obliquity) * Math.sin(longitude));
-    const siderealHours = 18.697374558 + 24.06570982441908 * days;
+    return {
+      rightAscension: Math.atan2(Math.cos(obliquity) * Math.sin(longitude), Math.cos(longitude)) / radians,
+      declination: Math.asin(Math.sin(obliquity) * Math.sin(longitude)),
+      siderealHours: 18.697374558 + 24.06570982441908 * days,
+    };
+  }
+
+  function daylightWeights(time, width, height) {
+    const radians = Math.PI / 180;
+    const { rightAscension, declination, siderealHours } = sunPosition(time);
     const [[south, west], [north, east]] = state.satelliteMeta.bounds;
     const mercator = (value) => Math.log(Math.tan(Math.PI / 4 + (value * Math.PI) / 360));
     const top = mercator(north);
@@ -1052,7 +1084,8 @@
     if (styledCanvases.has(key)) return styledCanvases.get(key);
     // While dragging or playing, the small copy (same picture, ~30 KB) keeps up; without one, the full picture.
     const small = scale < 1 ? smallSatelliteUrl(product.id, product.time) : null;
-    const { grey, width, height } = await greyLevels(small || product.url);
+    const colour = product.id === "natural";
+    const { grey, rgb, width, height } = await greyLevels(small || product.url, 0, 0, colour);
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -1060,24 +1093,35 @@
     const picture = context.createImageData(width, height);
     const pixels = picture.data;
     const table = satelliteTable(product.id);
-    // Visible is empty at night: there the infrared picture of the same moment fills in.
-    const infraredUrl = product.id === "vis006" && product.time ? (small ? smallSatelliteUrl("ir108", product.time) : infraredUrlAt(product.time)) : null;
+    // Visible and Natural colour are black at night: there the night table (dark blue ground with the infrared
+    // clouds of the same moment) fills in; without an infrared picture the night side is plain dark blue.
+    const daylight = DAYLIGHT_PRODUCTS.has(product.id) && product.time;
+    const infraredUrl = daylight ? (small ? smallSatelliteUrl("ir108", product.time) : infraredUrlAt(product.time)) : null;
     const night = infraredUrl ? await greyLevels(infraredUrl, width, height).catch(() => null) : null;
-    const weights = night ? daylightWeights(product.time, width, height) : null;
-    const irTable = night ? satelliteTable("irPlain") : null;
-    for (let index = 0; index < grey.length; index += 1) {
-      const entry = grey[index] * 4;
+    const weights = daylight ? daylightWeights(product.time, width, height) : null;
+    const nightTable = satelliteTable("night");
+    const count = width * height;
+    for (let index = 0; index < count; index += 1) {
       const out = index * 4;
-      if (!night || weights[index] >= 1) {
-        pixels[out] = table[entry];
-        pixels[out + 1] = table[entry + 1];
-        pixels[out + 2] = table[entry + 2];
-        pixels[out + 3] = table[entry + 3];
-        continue;
+      const day = weights ? weights[index] : 1;
+      if (day > 0) {
+        if (colour) {
+          pixels[out] = table[rgb[out] * 4];
+          pixels[out + 1] = table[rgb[out + 1] * 4];
+          pixels[out + 2] = table[rgb[out + 2] * 4];
+          pixels[out + 3] = 255;
+        } else {
+          const entry = grey[index] * 4;
+          pixels[out] = table[entry];
+          pixels[out + 1] = table[entry + 1];
+          pixels[out + 2] = table[entry + 2];
+          pixels[out + 3] = table[entry + 3];
+        }
+        if (day >= 1) continue;
       }
-      const day = weights[index];
-      const irEntry = night.grey[index] * 4;
-      for (let channel = 0; channel < 4; channel += 1) pixels[out + channel] = table[entry + channel] * day + irTable[irEntry + channel] * (1 - day);
+      const nightEntry = night ? night.grey[index] * 4 : 0;
+      const dark = night ? nightTable : NIGHT_GROUND_TABLE;
+      for (let channel = 0; channel < 4; channel += 1) pixels[out + channel] = pixels[out + channel] * day + dark[nightEntry + channel] * (1 - day);
     }
     context.putImageData(picture, 0, 0);
     canvas.grey = product.id === "ir108" ? grey : night?.grey || null;
@@ -1151,6 +1195,110 @@
     }
   }
 
+  // ── Sharp Visible when zoomed in ──────────────────────────────────────────
+  // The stored pictures are about 4.6 km per pixel, so zoomed in they break into blocks. There, Visible also loads
+  // EUMETSAT's 1 km HRV picture as map tiles straight from EUMETView (which allows it), for the shown time. Its
+  // red channel is HRV (blue is infrared). HRV comes in two strips with a gap between them, and is black at night:
+  // those pixels, and the night side, stay see-through so the stored picture underneath shows. Tiles are only
+  // loaded while the picture is still; dragging and playback use the stored pictures alone.
+  const HRV_MIN_ZOOM = 6;
+  const HRV_WMS = "https://view.eumetsat.int/geoserver/ows";
+  let HrvLayer = null;
+
+  function syncHrvLayer() {
+    const product = state.satelliteMeta && els.satelliteToggle.checked ? frameOf(currentSatelliteProduct()) : null;
+    const wanted = product?.id === "vis006" && product.time && state.map.getZoom() >= HRV_MIN_ZOOM
+      && !state.satelliteScrubbing && !state.satellitePlayTimer;
+    if (!wanted) {
+      if (state.satelliteHrv) state.map.removeLayer(state.satelliteHrv);
+      state.satelliteHrv = null;
+      return;
+    }
+    if (state.satelliteHrv?.options.time === product.time) return;
+    if (state.satelliteHrv) state.map.removeLayer(state.satelliteHrv);
+    HrvLayer ||= L.GridLayer.extend({
+      createTile(coords, done) {
+        const tile = document.createElement("canvas");
+        const size = this.getTileSize();
+        tile.width = size.x;
+        tile.height = size.y;
+        const corner = (x, y) => L.CRS.EPSG3857.project(this._map.unproject([x, y], coords.z));
+        const northWest = corner(coords.x * size.x, coords.y * size.y);
+        const southEast = corner((coords.x + 1) * size.x, (coords.y + 1) * size.y);
+        const params = new URLSearchParams({
+          service: "WMS", version: "1.1.1", request: "GetMap", layers: "msg_iodc:rgb_eview", styles: "",
+          srs: "EPSG:3857", bbox: [northWest.x, southEast.y, southEast.x, northWest.y].map((value) => value.toFixed(0)).join(","),
+          width: String(size.x), height: String(size.y), format: "image/jpeg", bgcolor: "0x000000", time: this.options.time,
+        });
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.onload = () => {
+          try {
+            drawHrvTile(tile, image, coords, this);
+            done(null, tile);
+          } catch (error) {
+            done(error, tile);
+          }
+        };
+        image.onerror = () => done(new Error("HRV tile failed"), tile);
+        image.src = `${HRV_WMS}?${params}`;
+        return tile;
+      },
+    });
+    state.satelliteHrv = new HrvLayer({
+      pane: "satellite",
+      zIndex: 200, // above the stored picture (Leaflet gives picture layers 100)
+      time: product.time,
+      minZoom: HRV_MIN_ZOOM,
+      maxNativeZoom: 9,
+      bounds: L.latLngBounds(state.satelliteMeta.bounds),
+      opacity: styledOpacity(),
+      className: "satellite-hrv",
+      updateWhenZooming: false,
+    }).addTo(state.map);
+  }
+
+  // Redraws one EUMETView tile as Visible: HRV through the shared brightness curve, faded out with the daylight.
+  function drawHrvTile(tile, image, coords, layer) {
+    const context = tile.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0, tile.width, tile.height);
+    const picture = context.getImageData(0, 0, tile.width, tile.height);
+    const pixels = picture.data;
+    const table = satelliteTable("hrv");
+    const radians = Math.PI / 180;
+    const { rightAscension, declination, siderealHours } = sunPosition(layer.options.time);
+    const low = Math.sin(-3 * radians);
+    const high = Math.sin(7 * radians);
+    const origin = coords.scaleBy(layer.getTileSize());
+    const cosHour = new Float32Array(tile.width);
+    for (let x = 0; x < tile.width; x += 1) {
+      const lon = layer._map.unproject([origin.x + x + 0.5, origin.y], coords.z).lng;
+      cosHour[x] = Math.cos((siderealHours * 15 + lon - rightAscension) * radians);
+    }
+    for (let y = 0; y < tile.height; y += 1) {
+      const lat = layer._map.unproject([origin.x, origin.y + y + 0.5], coords.z).lat * radians;
+      const a = Math.sin(lat) * Math.sin(declination);
+      const b = Math.cos(lat) * Math.cos(declination);
+      for (let x = 0; x < tile.width; x += 1) {
+        const out = (y * tile.width + x) * 4;
+        const red = pixels[out];
+        const green = pixels[out + 1];
+        const day = Math.min(1, Math.max(0, (a + b * cosHour[x] - low) / (high - low)));
+        // Outside the HRV strips red and green are near zero (the gap shows only infrared in blue).
+        if (red < 20 || green < 20 || day <= 0) {
+          pixels[out + 3] = 0;
+          continue;
+        }
+        const entry = Math.round((red + green) / 2) * 4;
+        pixels[out] = table[entry];
+        pixels[out + 1] = table[entry + 1];
+        pixels[out + 2] = table[entry + 2];
+        pixels[out + 3] = Math.round(255 * day);
+      }
+    }
+    context.putImageData(picture, 0, 0);
+  }
+
   // Legend for Windy-style infrared: cloud-top temperature, warm (clear) on the left to the coldest tops.
   const IR_LEGEND = { warm: 2, cold: -76, ticks: [0, -20, -40, -50, -60, -70] };
   function renderSatelliteLegend(id) {
@@ -1189,7 +1337,7 @@
   // Temperature under the picker from the shown infrared picture (Web Mercator, like the map).
   function satelliteReading(lat, lon) {
     const canvas = state.satelliteStyled?._url;
-    // Infrared, or Visible's infrared night side.
+    // Infrared, or the infrared night side of Visible and Natural colour.
     if (!canvas?.grey || !els.satelliteToggle.checked) return null;
     const [[south, west], [north, east]] = state.satelliteMeta.bounds;
     const mercator = (value) => Math.log(Math.tan(Math.PI / 4 + (value * Math.PI) / 360));
@@ -1288,9 +1436,11 @@
 
   function describeSatellite(product) {
     const time = Date.parse(product.time);
+    // The worker still calls these "Daylight only"; their night side is now drawn from infrared.
+    const note = DAYLIGHT_PRODUCTS.has(product.id) ? "At night, clouds from infrared" : product.note;
     setWeatherStatus(Number.isFinite(time)
-      ? `${product.label}: ${formatRadarTime(time)} (${formatAge(time)}). ${product.note}. Meteosat, every 15 minutes.`
-      : `${product.label}. ${product.note}.`);
+      ? `${product.label}: ${formatRadarTime(time)} (${formatAge(time)}). ${note}. Meteosat, every 15 minutes.`
+      : `${product.label}. ${note}.`);
   }
 
   // The widest zoom is the one where the region just fills the map, so nothing outside the data shows.
@@ -1305,6 +1455,7 @@
     state.imdRadar?.setOpacity(opacity);
     state.satelliteOverlay?.setOpacity(opacity);
     state.satelliteStyled?.setOpacity(styledOpacity());
+    state.satelliteHrv?.setOpacity(styledOpacity());
   }
 
   function getWeatherOpacity() {
