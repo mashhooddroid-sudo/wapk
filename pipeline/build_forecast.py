@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 import eccodes
@@ -41,7 +42,14 @@ MISSING = 255
 # Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
 # browsers never mix files cached under the old format (run files are cached as immutable for a year),
 # and the scheduled build republishes even when ECMWF's run itself has not changed.
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
+# Air quality (US AQI) is not in ECMWF's open data. It comes from Open-Meteo's air-quality API (CAMS global
+# forecast, the same source as the site's Health section), sampled every AQI_STEP degrees and interpolated
+# onto the forecast grid. CAMS reaches about 4–5 days ahead; later steps are missing.
+AQI_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+AQI_STEP = 1.5
+AQI_BATCH = 100
+AQI_PAUSE_SECONDS = 12
 
 WIND = {"encoding": "linear", "offset": -100.0, "scale": 200 / 254, "unit": "m/s"}
 TEMPERATURE = {"encoding": "linear", "offset": -80.0, "scale": 130 / 254, "unit": "°C"}
@@ -68,6 +76,7 @@ FIELDS = {
     "cape": {"encoding": "sqrt", "scale": math.sqrt(8000) / 254, "unit": "J/kg"},
     # Thunderstorm forecast as an ordered category: see storm_category.
     "storm": {"encoding": "linear", "offset": 0.0, "scale": 1.0, "unit": "category"},
+    "aqi": {"encoding": "linear", "offset": 0.0, "scale": 500 / 254, "unit": "US AQI"},
     "u10": WIND,
     "v10": WIND,
     **{f"{component}{level}": WIND for level in LEVELS for component in ("u", "v")},
@@ -226,6 +235,66 @@ def retrieve(client, run, steps, target, **request):
             time.sleep(20 * (attempt + 1))
 
 
+def fetch_aqi(run, steps, grid):
+    """US AQI at every step on the forecast grid (NaN where CAMS has no value), or None if Open-Meteo fails.
+
+    The coarse AQI_STEP grid is fetched AQI_BATCH points per request, paced to stay well inside Open-Meteo's
+    free limits (about 2,100 points per run), then interpolated bilinearly onto the 0.25° grid.
+    """
+    north, west, step, nx, ny = grid["north"], grid["west"], grid["step"], grid["nx"], grid["ny"]
+    lats = np.arange(REGION["north"], REGION["south"] - 1e-6, -AQI_STEP)
+    lons = np.arange(REGION["west"], REGION["east"] + 1e-6, AQI_STEP)
+    points = [(lat, lon) for lat in lats for lon in lons]
+    coarse = {}
+    for start in range(0, len(points), AQI_BATCH):
+        batch = points[start:start + AQI_BATCH]
+        query = urllib.parse.urlencode({
+            "latitude": ",".join(f"{lat:.2f}" for lat, _ in batch),
+            "longitude": ",".join(f"{lon:.2f}" for _, lon in batch),
+            "hourly": "us_aqi", "past_days": 1, "forecast_days": 7, "timezone": "GMT", "timeformat": "unixtime",
+        })
+        for attempt in range(4):
+            try:
+                request = urllib.request.Request(f"{AQI_URL}?{query}", headers={"User-Agent": "WAPK-forecast-builder/1.0"})
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    answers = json.load(response)
+                break
+            except Exception as error:  # noqa: BLE001 - any failure is retried, then AQI is skipped
+                print(f"AQI batch {start // AQI_BATCH + 1} failed ({error}); retrying", flush=True)
+                time.sleep(30 * (attempt + 1))
+        else:
+            print("AQI unavailable; publishing without it.", flush=True)
+            return None
+        for (lat, lon), answer in zip(batch, answers if isinstance(answers, list) else [answers]):
+            hourly = answer.get("hourly", {})
+            coarse[(lat, lon)] = dict(zip(hourly.get("time", []), hourly.get("us_aqi", [])))
+        time.sleep(AQI_PAUSE_SECONDS)
+
+    run_seconds = int(run.replace(tzinfo=dt.timezone.utc).timestamp())
+    fine_lat = north - np.arange(ny) * step
+    fine_lon = west + np.arange(nx) * step
+    # Positions of the fine grid in coarse-grid units, for bilinear interpolation.
+    row = np.clip((REGION["north"] - fine_lat) / AQI_STEP, 0, len(lats) - 1)
+    col = np.clip((fine_lon - REGION["west"]) / AQI_STEP, 0, len(lons) - 1)
+    r0 = np.minimum(np.floor(row).astype(int), len(lats) - 2)
+    c0 = np.minimum(np.floor(col).astype(int), len(lons) - 2)
+    ty = (row - r0)[:, None]
+    tx = (col - c0)[None, :]
+    result = {}
+    for step_hours in steps:
+        valid = run_seconds + step_hours * 3600
+        values = np.array([[coarse[(lat, lon)].get(valid) for lon in lons] for lat in lats], dtype=float)
+        if np.isnan(values).all():
+            result[step_hours] = None
+            continue
+        a = values[r0][:, c0]
+        b = values[r0][:, c0 + 1]
+        c = values[r0 + 1][:, c0]
+        d = values[r0 + 1][:, c0 + 1]
+        result[step_hours] = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty
+    return result
+
+
 def published_run(url):
     """The runId currently published at `url`, or None when it cannot be read."""
     # Cloudflare refuses Python's default "Python-urllib" User-Agent, so name the pipeline instead.
@@ -285,6 +354,8 @@ def build(out, steps, published_url=None):
             handle.write(encode(values, FIELDS[field]).tobytes())
 
     empty = np.full((ny, nx), np.nan)
+    grid = {"north": REGION["north"], "west": REGION["west"], "step": resolution, "nx": nx, "ny": ny}
+    aqi = fetch_aqi(run, steps, grid)
 
     def first_available(name):
         """Fields that cover the period before each step (gusts, radiation) have nothing at step 0."""
@@ -342,6 +413,8 @@ def build(out, steps, published_url=None):
             write(f"t{level}", index, get("t", level) - 273.15)
             write(f"r{level}", index, np.clip(get("r", level), 0, 100))
         write("freezing", index, freezing)
+        if aqi is not None:
+            write("aqi", index, aqi[step] if aqi[step] is not None else empty)
 
     meta = {
         "source": "ECMWF IFS open data",
@@ -351,10 +424,11 @@ def build(out, steps, published_url=None):
         "run": run.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "runId": run_id,
         "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "grid": {"north": REGION["north"], "west": REGION["west"], "step": resolution, "nx": nx, "ny": ny},
+        "grid": grid,
         "times": [int((run.replace(tzinfo=dt.timezone.utc) + dt.timedelta(hours=step)).timestamp()) for step in steps],
         "missing": MISSING,
-        "fields": FIELDS,
+        # Without AQI (Open-Meteo down) the field is left out, so the map hides the layer.
+        "fields": FIELDS if aqi is not None else {name: spec for name, spec in FIELDS.items() if name != "aqi"},
         "path": f"runs/{run_id}/{{field}}/{{step}}.bin",
     }
     with open(os.path.join(out, "latest.json"), "w", encoding="utf-8") as handle:

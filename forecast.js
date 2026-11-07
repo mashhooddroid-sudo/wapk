@@ -104,6 +104,13 @@
       note: "Solar radiation is the sunlight reaching the ground, averaged over the 3 hours before each step.",
       stops: [[10, "#3b2a6b", 0.3], [150, "#7a3f8f"], [300, "#c0516d"], [500, "#ec7a3d"], [700, "#f5b02e"], [900, "#fbe36a"], [1100, "#fffbe0"]],
     },
+    // US AQI from the CAMS air-quality forecast (via Open-Meteo, as in the Health section). The colours are the
+    // EPA bands, blended: good green, moderate yellow, then orange, red, purple and maroon.
+    aqi: {
+      label: "Air quality", type: "Air quality (US AQI)", unit: "US AQI", short: "AQI", field: "aqi", opacity: 0.7, ticks: [0, 50, 100, 150, 200, 300, 500],
+      note: "Air quality is the US AQI from the CAMS forecast and reaches about 4–5 days ahead: 0–50 good, 51–100 moderate, 101–150 unhealthy for sensitive groups, 151–200 unhealthy, 201–300 very unhealthy, above 300 hazardous.",
+      stops: [[0, "#00c853"], [25, "#00e400"], [75, "#ffff00"], [125, "#ff7e00"], [175, "#ff0000"], [250, "#8f3f97"], [400, "#7e0023"], [500, "#4a0014"]],
+    },
     pressure: {
       label: "Pressure", type: "Sea-level pressure", unit: "hPa, lines every 4", field: "pressure", isobars: true,
       stops: [[990, "#5b3fa8"], [1000, "#3d7bd9"], [1008, "#4fb3c4"], [1013, "#9ad18a"], [1018, "#e8d36a"], [1024, "#f0a14a"], [1032, "#d9534f"], [1040, "#8f1d3a"]],
@@ -120,6 +127,7 @@
     { key: "clouds", label: "Clouds", icon: "cloud", layers: ["cloud", "lowcloud", "midcloud", "highcloud"] },
     { key: "solar", label: "Solar", icon: "sun", layers: ["solar"] },
     { key: "pressure", label: "Pressure", icon: "gauge", layers: ["pressure"] },
+    { key: "air", label: "Air quality", icon: "leaf", layers: ["aqi"] },
   ];
   const groupOf = (layerKey) => GROUPS.find((group) => group.layers.includes(layerKey));
   const WIND_LEVELS = {
@@ -668,7 +676,8 @@
       const last = stops[stops.length - 1][0];
       const position = (value) => ((value - first) / (last - first)) * 100;
       const gradient = stops.map(([value, colour, alpha = 1]) => `${rgba(colour, alpha)} ${position(value).toFixed(1)}%`).join(", ");
-      const labels = stops.filter((_, index) => index % 2 === 0 || index === stops.length - 1);
+      // A layer can name its own labels (AQI shows its band edges); otherwise every other colour stop.
+      const labels = layer.ticks ? layer.ticks.map((value) => [value]) : stops.filter((_, index) => index % 2 === 0 || index === stops.length - 1);
       const levelText = layer.byHeight ? ` · ${WIND_LEVELS[els.level.value].short}` : "";
       els.legend.replaceChildren();
       const title = document.createElement("span");
@@ -853,6 +862,7 @@
         if (layer.convert) value = layer.convert(value);
         if (Number.isNaN(value)) reading = "—";
         else if (layer.unit === "°C") reading = options.getUnit?.() === "F" ? `${Math.round((value * 9) / 5 + 32)}°F` : `${Math.round(value)}°C`;
+        else if (state.layer === "aqi") reading = `AQI ${Math.round(value)}`;
         else if (state.layer === "freezing") reading = value < 50 ? "At ground" : `${(Math.round(value / 50) * 50).toLocaleString()} m`;
         else reading = `${value < 10 && /mm|cm/.test(layer.unit) ? value.toFixed(1) : Math.round(value).toLocaleString()} ${shortUnit(layer)}`;
       }
