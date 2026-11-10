@@ -800,7 +800,7 @@
       const isNow = Math.round((ms - Date.now()) / 3_600_000) === 0;
       // Zones half an hour off (India, IST) show the minutes, e.g. 12:30 PM.
       const minutes = Number(new Intl.DateTimeFormat("en-GB", { minute: "numeric", timeZone: VIEW_TIMEZONE }).format(new Date(ms))) ? { minute: "2-digit" } : {};
-      els.time.textContent = `${new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", ...minutes, timeZone: VIEW_TIMEZONE }).format(new Date(ms))}${isNow ? " · now" : ""}`;
+      els.time.textContent = `${new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", hour12: true, ...minutes, timeZone: VIEW_TIMEZONE }).format(new Date(ms))}${isNow ? " · now" : ""}`;
       // Centre the bubble over the handle, but keep it inside the bar at either end.
       const fraction = state.hour / (state.lastHour ?? state.meta.lastHour);
       els.time.style.left = `${fraction * 100}%`;
@@ -1184,8 +1184,8 @@
 
   function formatTime(ms, timeOnly) {
     const options = timeOnly
-      ? { hour: "numeric", minute: "2-digit", timeZone: VIEW_TIMEZONE, timeZoneName: "short" }
-      : { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: VIEW_TIMEZONE, timeZoneName: "short" };
+      ? { hour: "numeric", hour12: true, minute: "2-digit", timeZone: VIEW_TIMEZONE, timeZoneName: "short" }
+      : { weekday: "short", day: "numeric", month: "short", hour: "numeric", hour12: true, timeZone: VIEW_TIMEZONE, timeZoneName: "short" };
     return new Intl.DateTimeFormat(undefined, options).format(new Date(ms));
   }
 

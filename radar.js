@@ -801,14 +801,14 @@
 
   function formatRadarDateTime(timestampMs) {
     // Include the day once the time is no longer from today's last few hours.
-    const options = { hour: "2-digit", minute: "2-digit", timeZone: VIEW_TIMEZONE };
+    const options = { hour: "2-digit", hour12: true, minute: "2-digit", timeZone: VIEW_TIMEZONE };
     if (Date.now() - timestampMs > 12 * 60 * 60 * 1000) Object.assign(options, { day: "numeric", month: "short" });
     return new Intl.DateTimeFormat(undefined, options).format(new Date(timestampMs));
   }
 
   function formatRadarTime(timestampMs) {
     return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       timeZone: VIEW_TIMEZONE,
       timeZoneName: "short",
@@ -1396,7 +1396,7 @@
     els.satellitePlay.disabled = frames.length < 2;
     const ms = Date.parse(time);
     els.satelliteTime.textContent = Number.isFinite(ms)
-      ? `${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: VIEW_TIMEZONE }).format(new Date(ms))} · ${formatAge(ms)}`
+      ? `${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", hour12: true, minute: "2-digit", timeZone: VIEW_TIMEZONE }).format(new Date(ms))} · ${formatAge(ms)}`
       : "Loading…";
     els.satelliteSlider.setAttribute("aria-valuetext", els.satelliteTime.textContent);
     return { ...product, time, url };
@@ -2794,7 +2794,7 @@
   function formatStrikeTime(timestampMs) {
     if (!Number.isFinite(timestampMs)) return "--";
     return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       second: "2-digit",
       timeZone: VIEW_TIMEZONE,
@@ -2806,7 +2806,7 @@
     const timestampMs = Number(seconds) * 1000;
     if (!Number.isFinite(timestampMs)) return "unknown";
     return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       timeZoneName: "short",
     }).format(new Date(timestampMs));
@@ -2819,7 +2819,7 @@
     return new Intl.DateTimeFormat(undefined, {
       month: "short",
       day: "2-digit",
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       timeZone: VIEW_TIMEZONE,
     }).format(date);
@@ -2834,7 +2834,7 @@
     }
 
     const formatter = new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       timeZone: VIEW_TIMEZONE,
     });
@@ -2852,7 +2852,7 @@
 
   function formatLocalTime(date) {
     return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
+      hour: "2-digit", hour12: true,
       minute: "2-digit",
       second: "2-digit",
     }).format(date);

@@ -194,7 +194,8 @@
           cells.push(cell);
           return cell;
         };
-        add("hour", `${String(column.hour).padStart(2, "0")}`, "detail-hour");
+        // 12-hour clock, short enough for the narrow columns: 12am, 3am … 9pm.
+        add("hour", `${column.hour % 12 || 12}${column.hour < 12 ? "am" : "pm"}`, "detail-hour");
         const art = element("span", "detail-icon");
         art.innerHTML = icon(column.code, column.isDay, column.hail);
         art.title = window.Atmos?.condition?.(column.code) || "";
