@@ -1658,16 +1658,18 @@
   const PATTERN_SPACING = 15;
 
   // What falls, from ECMWF's precipitation type (1 rain, 2 rain–snow mix, 3 snow, 4 freezing rain / ice pellets)
-  // and the 2 m temperature: at or below 0 °C snow (freezing rain stays freezing rain), up to 1.5 °C snow or
-  // sleet, 1.5–3 °C sleet / wet snow, above 3 °C rain (ECMWF snow stays sleet up to 4 °C). Without a
-  // temperature, ECMWF's type.
+  // and the 2 m temperature at the real terrain height. ECMWF's type is trusted and only adjusted near freezing:
+  // at or below 0 °C snow; 0–1 °C rain turns to sleet; 1–2 °C a mix is sleet; 2–4 °C snow or a mix is sleet;
+  // above 4 °C rain. Freezing rain stays freezing rain up to 3 °C. Without a temperature, ECMWF's type.
+  // (weather-logic.js applies the same rule to the overview.)
   function precipKind(type, celsius) {
-    if (Number.isNaN(celsius)) return type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
-    if (type === 4 && celsius <= 3) return "freezing";
+    const ecmwf = type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
+    if (Number.isNaN(celsius)) return ecmwf;
+    if (type === 4) return celsius <= 3 ? "freezing" : "rain";
     if (celsius <= 0) return "snow";
-    if (celsius <= 1.5) return type === 1 ? "mix" : "snow";
-    if (celsius <= 3) return "mix";
-    if (celsius <= 4 && type === 3) return "mix";
+    if (celsius <= 1) return type === 1 ? "mix" : "snow";
+    if (celsius <= 2) return type === 2 ? "mix" : ecmwf;
+    if (celsius <= 4) return type === 1 ? "rain" : "mix";
     return "rain";
   }
 
@@ -1733,7 +1735,8 @@
         const { points, lats, lons } = this._points(map, size);
         const sampled = this._sample(lats, lons);
         // Zoomed in, the temperature is judged at the real terrain height (terrain tiles load asynchronously).
-        const heights = sampled.temp && sampled.ground && map.getZoom() >= TERRAIN_MIN_ZOOM ? await pointHeights(lats, lons, map.getZoom()) : null;
+        // The real terrain is used at every zoom (coarser tiles when zoomed out), so zooming never changes a symbol.
+        const heights = sampled.temp && sampled.ground ? await pointHeights(lats, lons, map.getZoom()) : null;
         if (drawId !== this._drawId || !this._canvas) return;
         this._canvas.width = Math.round(size.x * ratio);
         this._canvas.height = Math.round(size.y * ratio);
@@ -1828,9 +1831,9 @@
           context.fill();
           context.stroke();
         };
-        // Sleet / wet snow: a small snowflake with a blue drop beside it.
-        flakes(mix.map(([x, y]) => [x - 2.6, y]), 0.92, 2.6);
-        drops(mix, 3.2, "#7cc4ff", "rgba(10, 30, 60, 0.6)", 1);
+        // Sleet / wet snow: a snowflake and a white drop with a dark edge, readable on blue rain colours.
+        flakes(mix.map(([x, y]) => [x - 3, y]), 1, 3);
+        drops(mix, 3.6, "#ffffff", "rgba(8, 34, 80, 0.95)", 1.3);
         // Freezing rain and ice pellets: a pink drop with a white rim.
         drops(freezing, 0, "#ff7eb6", "rgba(255, 255, 255, 0.85)", 1.25);
 
