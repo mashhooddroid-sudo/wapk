@@ -42,7 +42,11 @@ MISSING = 255
 # Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
 # browsers never mix files cached under the old format (run files are cached as immutable for a year),
 # and the scheduled build republishes even when ECMWF's run itself has not changed.
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
+# ECMWF runs four times a day, but only the 00Z and 12Z runs reach 168 h in open data; 06Z and 18Z stop at
+# FRESH_HOURS. Each build takes the first FRESH_HOURS from the newest run of any kind and the rest of the week
+# from the newest full run, so the near days always come from the latest model run.
+FRESH_HOURS = 90
 # Surface fields come from ECMWF's 0.1° (about 9 km) open data; the ones where detail matters (temperature,
 # rain, snow, cloud, storms …) are stored on that FINE grid, the smooth ones (pressure, solar, 10 m wind for
 # the particles …) are sampled down to the 0.25° grid with the pressure levels, keeping downloads small.
@@ -341,34 +345,52 @@ def set_output(name, value):
 def build(out, steps, published_url=None):
     client = Client(source="ecmwf", model="ifs", resol="0p25")
     fine_client = Client(source="ecmwf", model="ifs", resol=FINE_RESOL)
-    run = client.latest(type="fc", step=max(steps), param="2t")
-    # Both resolutions come from the same run; wait for the 0.1° files if they lag behind.
-    if fine_client.latest(type="fc", step=max(steps), param="2t") < run:
-        run = fine_client.latest(type="fc", step=max(steps), param="2t")
-    run_id = f"{run:%Y%m%d%H}-v{FORMAT_VERSION}"
-    print(f"ECMWF IFS run {run:%Y-%m-%d %H}Z, steps {steps}", flush=True)
+    # The newest run complete to FRESH_HOURS and the newest run complete to the end of the week, at both
+    # resolutions (the 0.1° files come out a little after the 0.25° ones).
+    newest = min(c.latest(type="fc", step=FRESH_HOURS, param="2t") for c in (client, fine_client))
+    full = min(c.latest(type="fc", step=max(steps), param="2t") for c in (client, fine_client))
+    newest = max(newest, full)
+    fresh_end = max(steps) if newest == full else max(step for step in steps if step <= FRESH_HOURS)
+    lag = round((newest - full).total_seconds() / 3600)
+    fresh_steps = [step for step in steps if step <= fresh_end]
+    # The full run's steps after the newest run's last one; its step at the join is needed for rates and totals.
+    tail_steps = [step for step in steps if step - lag > fresh_end] if newest != full else []
+    join_step = fresh_end + lag
+    if tail_steps and join_step not in steps:
+        raise SystemExit(f"No full-run step at the join ({join_step} h)")
+    run_id = f"{newest:%Y%m%d%H}" + (f"-{full:%d%H}" if tail_steps else "") + f"-v{FORMAT_VERSION}"
+    print(f"ECMWF IFS run {newest:%Y-%m-%d %H}Z to {fresh_end} h" + (f", then {full:%Y-%m-%d %H}Z to {max(steps)} h" if tail_steps else ""), flush=True)
     if published_url and published_run(published_url) == run_id:
         print("That run is already published; nothing to do.", flush=True)
         set_output("changed", "false")
         return None
+
+    # Timeline: (source, step, valid time). "new" is the newest run, "full" the full run for the tail.
+    timeline = [("new", step, newest + dt.timedelta(hours=step)) for step in fresh_steps]
+    timeline += [("full", step, full + dt.timedelta(hours=step)) for step in tail_steps]
+    downloads = {"new": (newest, fresh_steps)}
+    if tail_steps:
+        downloads["full"] = (full, [join_step] + tail_steps)
 
     grids = {}
     fine = {}
     resolution = None
     fine_resolution = None
     with tempfile.TemporaryDirectory() as work:
-        surface = os.path.join(work, "surface.grib2")
-        levels = os.path.join(work, "levels.grib2")
-        profile = os.path.join(work, "profile.grib2")
-        retrieve(fine_client, run, steps, surface, param=SURFACE_PARAMS)
-        for name, _, step, values, fine_resolution in read_messages(surface):
-            fine[(name, step)] = values
-        os.remove(surface)
-        retrieve(client, run, steps, levels, param=["u", "v", "t", "r"], levelist=LEVELS)
-        retrieve(client, run, steps, profile, param=["t", "gh"], levelist=FREEZING_LEVELS)
-        for path in (levels, profile):
-            for name, level, step, values, resolution in read_messages(path):
-                grids[(name, level, step)] = values
+        for source, (run, run_steps) in downloads.items():
+            surface = os.path.join(work, f"{source}-surface.grib2")
+            levels = os.path.join(work, f"{source}-levels.grib2")
+            profile = os.path.join(work, f"{source}-profile.grib2")
+            retrieve(fine_client, run, run_steps, surface, param=SURFACE_PARAMS)
+            for name, _, step, values, fine_resolution in read_messages(surface):
+                fine[(name, source, step)] = values
+            os.remove(surface)
+            retrieve(client, run, run_steps, levels, param=["u", "v", "t", "r"], levelist=LEVELS)
+            retrieve(client, run, run_steps, profile, param=["t", "gh"], levelist=FREEZING_LEVELS)
+            for path in (levels, profile):
+                for name, level, step, values, resolution in read_messages(path):
+                    grids[(name, level, source, step)] = values
+                os.remove(path)
 
     sample = next(iter(grids.values()))
     ny, nx = sample.shape
@@ -390,47 +412,61 @@ def build(out, steps, published_url=None):
     empty = np.full((ny, nx), np.nan)
     fine_empty = np.full((fine_grid["ny"], fine_grid["nx"]), np.nan)
     grid = {"north": REGION["north"], "west": REGION["west"], "step": resolution, "nx": nx, "ny": ny}
-    aqi = fetch_aqi(run, steps, grid)
+    # Hours after the newest run of every timeline entry (AQI is matched by valid time).
+    hours = [round((valid - newest).total_seconds() / 3600) for _, _, valid in timeline]
+    aqi = fetch_aqi(newest, hours, grid)
     up = lambda values: regrid(values, grid, fine_grid)  # noqa: E731 - 0.25° level data onto the 0.1° grid
     down = lambda values: regrid(values, fine_grid, grid)  # noqa: E731 - smooth surface fields onto 0.25°
 
+    def total(name, source, step):
+        """A field accumulated since its run started (rain, snow, radiation), continued across the join: the
+        tail adds what the full run accumulates after the join to the newest run's total at its last step."""
+        if source == "new":
+            return fine.get((name, "new", step), fine_empty)
+        return fine.get((name, "new", fresh_end), fine_empty) + fine.get((name, "full", step), fine_empty) - fine.get((name, "full", join_step), fine_empty)
+
     def first_available(name):
         """Fields that cover the period before each step (gusts, radiation) have nothing at step 0."""
-        return next((fine[(name, later)] for later in steps if (name, later) in fine and later), fine_empty)
+        return next((fine[(name, "new", later)] for later in fresh_steps if (name, "new", later) in fine and later), fine_empty)
 
     def write_field(field, index, values):
         """Writes a fine-grid value array on the grid its field is stored on."""
         write(field, index, values if field in FINE_FIELDS else down(values))
 
     # The model's ground height, from the surface and sea-level pressure at the first step.
-    write("orog", 0, ground_height(fine[("sp", steps[0])], fine[("msl", steps[0])], fine[("2t", steps[0])]))
+    first = fresh_steps[0]
+    write("orog", 0, ground_height(fine[("sp", "new", first)], fine[("msl", "new", first)], fine[("2t", "new", first)]))
 
-    for index, step in enumerate(steps):
-        get = lambda name: fine.get((name, step), fine_empty)  # noqa: E731 - surface fields, 0.1°
-        level_at = lambda name, level: grids.get((name, level, step), empty)  # noqa: E731 - levels, 0.25°
+    for index, (source, step, valid) in enumerate(timeline):
+        get = lambda name: fine.get((name, source, step), fine_empty)  # noqa: E731 - surface fields, 0.1°
+        level_at = lambda name, level: grids.get((name, level, source, step), empty)  # noqa: E731 - levels, 0.25°
+        # The entry before this one, for values over the last interval (the join's previous one is the full run's).
+        previous = timeline[index - 1] if index else None
+        if previous and previous[0] != source:
+            previous = ("full", join_step, previous[2])
+        interval = (valid - previous[2]).total_seconds() / 3600 if previous else None
         write_field("temp", index, get("2t") - 273.15)
-        # Total precipitation is accumulated since the run started; the map shows the rate over the last step.
-        previous = steps[index - 1] if index else None
+        # Precipitation is accumulated since the run started; the map shows the rate over the last interval.
         if previous is None:
             rate = np.zeros(fine_empty.shape)
         else:
-            rate = (get("tp") - fine.get(("tp", previous), fine_empty)) * 1000 / (step - previous)
+            rate = (total("tp", source, step) - total("tp", previous[0], previous[1])) * 1000 / interval
         write_field("precip", index, np.clip(rate, 0, None))
         # Gusts are a maximum over the preceding period, so the run's first step has none; use the next one.
         gust = get("10fg")
         if np.isnan(gust).all():
             gust = first_available("10fg")
         write_field("gust", index, gust)
-        # Rain and snowfall totals since the run started (snow as fresh snow, about 1 cm per mm of water).
-        write_field("rainacc", index, np.clip(get("tp") * 1000, 0, None) if step else np.zeros(fine_empty.shape))
-        write_field("snowacc", index, np.clip(get("sf") * 1000, 0, None) if step else np.zeros(fine_empty.shape))
+        # Rain and snowfall totals since the newest run started (snow as fresh snow, about 1 cm per mm of water).
+        write_field("rainacc", index, np.clip(total("tp", source, step) * 1000, 0, None) if index else np.zeros(fine_empty.shape))
+        write_field("snowacc", index, np.clip(total("sf", source, step) * 1000, 0, None) if index else np.zeros(fine_empty.shape))
         write_field("snowdepth", index, np.clip(snow_depth(get("sd"), get("rsn")), 0, None))
-        # Downward solar radiation is accumulated too: the mean over the last step, in W/m².
+        # Downward solar radiation is accumulated too: the mean over the last interval, in W/m².
         if previous is None:
-            later = next((s for s in steps if s), None)
+            later = next((later for later in fresh_steps if later), None)
             solar = first_available("ssrd") / (later * 3600) if later else fine_empty
         else:
-            solar = (get("ssrd") - fine.get(("ssrd", previous), fine_empty)) / ((step - previous) * 3600)
+            solar = (total("ssrd", source, step) - total("ssrd", previous[0], previous[1])) / (interval * 3600)
         write_field("solar", index, np.clip(solar, 0, None))
         write_field("dew", index, get("2d") - 273.15)
         write_field("tcwv", index, get("tcwv"))
@@ -443,7 +479,7 @@ def build(out, steps, published_url=None):
         write_field("highcloud", index, get("hcc") * 100)
         write_field("pressure", index, get("msl") / 100)
         write_field("cape", index, get("mucape"))
-        # The rain over the step can hide a short downpour, so the instantaneous rate counts too.
+        # The rain over the interval can hide a short downpour, so the instantaneous rate counts too.
         storm_rain = np.fmax(np.clip(rate, 0, None), np.nan_to_num(get("tprate") * 3600, nan=0.0))
         freezing = freezing_level([up(level_at("t", level)) for level in FREEZING_LEVELS], [up(level_at("gh", level)) for level in FREEZING_LEVELS], get("2t"))
         write_field("storm", index, storm_category(
@@ -459,11 +495,11 @@ def build(out, steps, published_url=None):
             write(f"r{level}", index, np.clip(level_at("r", level), 0, 100))
         write_field("freezing", index, freezing)
         if aqi is not None:
-            write("aqi", index, aqi[step] if aqi[step] is not None else empty)
+            write("aqi", index, aqi[hours[index]] if aqi[hours[index]] is not None else empty)
 
     fields = {name: ({**spec, "grid": "fine"} if name in FINE_FIELDS else spec) for name, spec in FIELDS.items() if name != "aqi"}
     if aqi is not None:
-        covered = [index for index, step in enumerate(steps) if aqi[step] is not None]
+        covered = [index for index, hour in enumerate(hours) if aqi[hour] is not None]
         if covered:
             fields["aqi"] = {**FIELDS["aqi"], "lastStep": covered[-1]}
 
@@ -472,13 +508,15 @@ def build(out, steps, published_url=None):
         "model": "IFS 0.1° surface, 0.25° levels",
         "license": "CC-BY-4.0",
         "attribution": "Contains modified Copernicus/ECMWF open data. © ECMWF, CC-BY-4.0.",
-        "run": run.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "run": newest.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        # After FRESH_HOURS the steps come from this (older) full run, when the newest run is a 06Z/18Z one.
+        "tailRun": full.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z") if tail_steps else None,
         "runId": run_id,
         "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "grid": grid,
         # Fields marked "grid": "fine" use this 0.1° grid; the rest use "grid".
         "grids": {"fine": fine_grid},
-        "times": [int((run.replace(tzinfo=dt.timezone.utc) + dt.timedelta(hours=step)).timestamp()) for step in steps],
+        "times": [int(valid.replace(tzinfo=dt.timezone.utc).timestamp()) for _, _, valid in timeline],
         "missing": MISSING,
         # Without AQI (Open-Meteo down) the field is left out, so the map hides the layer. With it, lastStep is
         # the last step CAMS covers, so the map's time slider stops there for Air quality.
@@ -500,7 +538,7 @@ def build(out, steps, published_url=None):
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as handle:
         handle.write(
             "<!doctype html><meta charset=utf-8><title>WAPK forecast data</title>"
-            f"<p>Forecast map data for WAPK — Weather Alert PK. Run {run:%Y-%m-%d %H}Z.</p>"
+            f"<p>Forecast map data for WAPK — Weather Alert PK. Run {newest:%Y-%m-%d %H}Z.</p>"
             f"<p>{meta['attribution']}</p>"
         )
     # Without a 404 page, Cloudflare Pages answers unknown paths with index.html and status 200. The map
