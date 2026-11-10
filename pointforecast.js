@@ -221,7 +221,8 @@
         const cell = event.target.closest("[data-column]");
         if (!cell) return;
         const column = state.columns[Number(cell.dataset.column)];
-        if (column) options.onTimeSelect?.(column.at + 1.5 * 3_600_000);
+        // The column's own time (3 PM shows 3 PM on the map), not the middle of its three-hour block.
+        if (column) options.onTimeSelect?.(column.at);
       });
       body.replaceChildren(table);
       highlight(true);

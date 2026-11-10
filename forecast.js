@@ -61,8 +61,8 @@
     // where storms are expected and snowflakes where it snows; plain rain has colour only.
     rainthunder: {
       label: "Rain, thunder", type: "Rain, thunder", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4, pattern: true,
-      extraFields: ["ptype", "storm"],
-      note: "Rain, thunder shows the rain or snow rate. Small lightning bolts mark expected thunderstorms (with ice pellets where hail is possible), snowflakes snow.",
+      extraFields: ["ptype", "storm", "temp", "orog"],
+      note: "Rain, thunder shows the rain or snow rate. Bolts mark expected thunderstorms (with ice pellets where hail is possible); snowflakes snow; a snowflake with a raindrop sleet or wet snow (about 0–3 °C); a pink drop freezing rain.",
       stops: [[0.1, "#7fb9f0"], [0.5, "#4f9ae8"], [1, "#2f7fdc"], [2, "#2aa76a"], [5, "#d9cf3a"], [10, "#f0882d"], [20, "#e5322d"], [50, "#b3189b"]],
     },
     freezing: {
@@ -665,10 +665,13 @@
       if (layer?.pattern) {
         precipPattern.setSource((lats, lons) => {
           const plan = planFor(gridOfPair(data[layer.field], state.meta.grid), lats, lons);
+          const tempPlan = data.temp ? planFor(gridOfPair(data.temp, state.meta.grid), lats, lons) : null;
           return {
             rate: applyPlan(plan, data[layer.field]),
             ptype: data.ptype ? applyCategoryPlan(plan, data.ptype) : null,
             storm: data.storm ? applyCategoryPlan(plan, data.storm) : null,
+            temp: tempPlan ? applyPlan(tempPlan, data.temp) : null,
+            ground: tempPlan && data.orog ? applyPlan(buildPlan(gridOfPair(data.orog, state.meta.grid), lats, lons), data.orog) : null,
           };
         });
         if (!map.hasLayer(precipPattern)) precipPattern.addTo(map);
@@ -1653,6 +1656,40 @@
   // snows (fainter for a rain–snow mix), and
   // nothing for plain rain. Only where at least 0.1 mm/h falls, so symbols never sit on dry ground.
   const PATTERN_SPACING = 15;
+
+  // What falls, from ECMWF's precipitation type (1 rain, 2 rain–snow mix, 3 snow, 4 freezing rain / ice pellets)
+  // and the 2 m temperature: at or below 0 °C snow (freezing rain stays freezing rain), up to 1.5 °C snow or
+  // sleet, 1.5–3 °C sleet / wet snow, above 3 °C rain (ECMWF snow stays sleet up to 4 °C). Without a
+  // temperature, ECMWF's type.
+  function precipKind(type, celsius) {
+    if (Number.isNaN(celsius)) return type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
+    if (type === 4 && celsius <= 3) return "freezing";
+    if (celsius <= 0) return "snow";
+    if (celsius <= 1.5) return type === 1 ? "mix" : "snow";
+    if (celsius <= 3) return "mix";
+    if (celsius <= 4 && type === 3) return "mix";
+    return "rain";
+  }
+
+  // Terrain height (m) at each point from tiles about as detailed as the view (see terrainTile).
+  async function pointHeights(lats, lons, zoom) {
+    const z = Math.max(3, Math.min(12, Math.round(zoom) - 1));
+    const keys = new Map();
+    const heights = new Float32Array(lats.length).fill(NaN);
+    const where = Array.from(lats, (lat, index) => {
+      const x = worldX(lons[index], z);
+      const y = worldY(lat, z);
+      const key = `${Math.floor(x / 256)}/${Math.floor(y / 256)}`;
+      if (!keys.has(key)) keys.set(key, terrainTile(z, ((Math.floor(x / 256) % 2 ** z) + 2 ** z) % 2 ** z, Math.floor(y / 256)));
+      return [key, (Math.floor(y) % 256) * 256 + (Math.floor(x) % 256)];
+    });
+    const tiles = new Map(await Promise.all([...keys].map(async ([key, request]) => [key, await request])));
+    where.forEach(([key, offset], index) => {
+      const tile = tiles.get(key);
+      if (tile) heights[index] = tile[offset];
+    });
+    return heights;
+  }
   let PrecipPatternClass = null;
 
   function createPrecipPatternLayer(options) {
@@ -1687,11 +1724,17 @@
         this._canvas?.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
       },
 
-      redraw() {
+      async redraw() {
         if (!this._map || !this._canvas || !this._sample) return;
+        const drawId = (this._drawId = (this._drawId || 0) + 1);
         const map = this._map;
         const size = map.getSize();
         const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        const { points, lats, lons } = this._points(map, size);
+        const sampled = this._sample(lats, lons);
+        // Zoomed in, the temperature is judged at the real terrain height (terrain tiles load asynchronously).
+        const heights = sampled.temp && sampled.ground && map.getZoom() >= TERRAIN_MIN_ZOOM ? await pointHeights(lats, lons, map.getZoom()) : null;
+        if (drawId !== this._drawId || !this._canvas) return;
         this._canvas.width = Math.round(size.x * ratio);
         this._canvas.height = Math.round(size.y * ratio);
         this._canvas.style.width = `${size.x}px`;
@@ -1700,7 +1743,32 @@
         const context = this._canvas.getContext("2d");
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-        // Grid positions follow the map (not the screen), so the pattern does not shimmer when panning.
+        const { rate, ptype, storm, temp, ground } = sampled;
+        // Precipitation type at each point from ECMWF's type and the 2 m temperature (see precipKind).
+        const kinds = points.map((_, index) => {
+          let celsius = temp ? temp[index] : NaN;
+          if (heights && heights[index] > 0 && !Number.isNaN(ground[index])) celsius += (6.5 * (ground[index] - heights[index])) / 1000;
+          return precipKind(ptype ? Math.round(ptype[index]) : 1, celsius);
+        });
+        const bolts = [];
+        const hail = [];
+        const snow = [];
+        const mix = [];
+        const freezing = [];
+        points.forEach((point, index) => {
+          if (!(rate[index] >= 0.1)) return;
+          // Storm category 5 is "with hail" (see the Storms layer): its bolts get small ice pellets beside them.
+          if (storm && storm[index] >= 1) bolts.push(point);
+          if (storm && Math.round(storm[index]) >= 5) hail.push(point);
+          else if (kinds[index] === "snow") snow.push(point);
+          else if (kinds[index] === "mix") mix.push(point);
+          else if (kinds[index] === "freezing") freezing.push(point);
+        });
+        this._drawSymbols(context, { bolts, hail, snow, mix, freezing });
+      },
+
+      // A dense, staggered grid of points fixed to the map (not the screen), so the pattern does not shimmer.
+      _points(map, size) {
         const origin = map.getPixelBounds().min;
         const points = [];
         const firstRow = Math.floor(origin.y / PATTERN_SPACING) - 1;
@@ -1720,21 +1788,10 @@
           lats[index] = point.lat;
           lons[index] = point.lng;
         });
-        const { rate, ptype, storm } = this._sample(lats, lons);
+        return { points, lats, lons };
+      },
 
-        const bolts = [];
-        const hail = [];
-        const snow = [];
-        const mix = [];
-        points.forEach((point, index) => {
-          if (!(rate[index] >= 0.1)) return;
-          // Storm category 5 is "with hail" (see the Storms layer): its bolts get small ice pellets beside them.
-          if (storm && storm[index] >= 1) bolts.push(point);
-          if (storm && Math.round(storm[index]) >= 5) hail.push(point);
-          else if (ptype && Math.round(ptype[index]) === 3) snow.push(point);
-          else if (ptype && Math.round(ptype[index]) === 2) mix.push(point);
-        });
-
+      _drawSymbols(context, { bolts, hail, snow, mix, freezing }) {
         // Snowflakes: three crossing strokes.
         const flakes = (list, alpha, radius) => {
           if (!list.length) return;
@@ -1752,7 +1809,30 @@
           context.stroke();
         };
         flakes(snow, 0.92, 3.4);
-        flakes(mix, 0.6, 2.8);
+
+        // Raindrops (a small teardrop) for sleet beside its snowflake, and pink for freezing rain.
+        const drops = (list, dx, fill, edge, size) => {
+          if (!list.length) return;
+          context.beginPath();
+          for (const [x0, y0] of list) {
+            const x = x0 + dx;
+            const y = y0 + 1;
+            context.moveTo(x, y - 2.6 * size);
+            context.quadraticCurveTo(x + 1.9 * size, y - 0.2 * size, x, y + 1.5 * size);
+            context.quadraticCurveTo(x - 1.9 * size, y - 0.2 * size, x, y - 2.6 * size);
+            context.closePath();
+          }
+          context.fillStyle = fill;
+          context.strokeStyle = edge;
+          context.lineWidth = 0.7;
+          context.fill();
+          context.stroke();
+        };
+        // Sleet / wet snow: a small snowflake with a blue drop beside it.
+        flakes(mix.map(([x, y]) => [x - 2.6, y]), 0.92, 2.6);
+        drops(mix, 3.2, "#7cc4ff", "rgba(10, 30, 60, 0.6)", 1);
+        // Freezing rain and ice pellets: a pink drop with a white rim.
+        drops(freezing, 0, "#ff7eb6", "rgba(255, 255, 255, 0.85)", 1.25);
 
         // Lightning bolts: a small zig-zag, yellow with a thin dark edge.
         if (bolts.length) {
