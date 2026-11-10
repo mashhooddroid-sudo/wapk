@@ -34,7 +34,7 @@
 
   // `stage` is the Maps container; `options.onPick(lat, lon)` runs when the globe is tapped.
   function attach(stage, options = {}) {
-    const state = { map: null, ready: false, visible: false, draw: null, frame: 0, particles: [], field: null };
+    const state = { map: null, ready: false, visible: false, draw: null, frame: 0, particles: [], field: null, overlays: null, overlayIds: [] };
     const container = document.createElement("div");
     container.className = "globe-map";
     container.hidden = true;
@@ -54,6 +54,7 @@
         state.map.jumpTo(view);
       }
       applyDraw();
+      applyOverlays();
     }
 
     function hide() {
@@ -101,6 +102,7 @@
       map.on("load", () => {
         state.ready = true;
         applyDraw();
+        applyOverlays();
       });
       state.map = map;
     }
@@ -139,6 +141,79 @@
         map.removeSource("forecast");
       }
       resetParticles();
+    }
+
+    // ── Satellite, radar, fires and lightning ──────────────────────────────────
+    // radar.js hands over what the flat map shows: { images: [{ src (URL or canvas), bounds: [w, s, e, n],
+    // opacity }], points: [{ lat, lon, color, radius, stroke, opacity }] }, bottom to top.
+    function setOverlays(overlays) {
+      state.overlays = overlays;
+      if (state.visible) applyOverlays();
+    }
+
+    function applyOverlays() {
+      const map = state.map;
+      if (!map || !state.ready) return;
+      const overlays = state.overlays || { images: [], points: [] };
+      const previous = new Map(state.overlayIds.map((entry) => [entry.id, entry]));
+      const kept = [];
+      overlays.images.forEach((image, index) => {
+        const id = `overlay-${index}`;
+        const [west, south, east, north] = image.bounds;
+        const coordinates = [[west, north], [east, north], [east, south], [west, south]];
+        const old = previous.get(id);
+        const isCanvas = typeof image.src !== "string";
+        if (old && old.src === image.src) {
+          map.getSource(id).setCoordinates(coordinates);
+          previous.delete(id);
+        } else {
+          if (old) {
+            map.removeLayer(id);
+            map.removeSource(id);
+            previous.delete(id);
+          }
+          map.addSource(id, isCanvas ? { type: "canvas", canvas: image.src, coordinates, animate: false } : { type: "image", url: image.src, coordinates });
+          map.addLayer({ id, type: "raster", source: id, paint: { "raster-fade-duration": 0, "raster-resampling": "linear" } }, "labels");
+        }
+        map.setPaintProperty(id, "raster-opacity", image.opacity ?? 1);
+        if (isCanvas) {
+          // A canvas source re-reads its canvas only while playing; one frame picks up the picture.
+          const source = map.getSource(id);
+          source.play();
+          requestAnimationFrame(() => source.pause());
+        }
+        kept.push({ id, src: image.src });
+      });
+      previous.forEach(({ id }) => {
+        map.removeLayer(id);
+        map.removeSource(id);
+      });
+      state.overlayIds = kept;
+
+      const features = overlays.points.map((point) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [point.lon, point.lat] },
+        properties: { color: point.color, radius: point.radius, stroke: point.stroke || "#000000", opacity: point.opacity ?? 0.9 },
+      }));
+      const data = { type: "FeatureCollection", features };
+      if (map.getSource("points")) map.getSource("points").setData(data);
+      else {
+        map.addSource("points", { type: "geojson", data });
+        map.addLayer({
+          id: "points",
+          type: "circle",
+          source: "points",
+          paint: {
+            "circle-color": ["get", "color"],
+            "circle-radius": ["get", "radius"],
+            "circle-opacity": ["get", "opacity"],
+            "circle-stroke-color": ["get", "stroke"],
+            "circle-stroke-width": 0.8,
+            "circle-pitch-alignment": "map",
+          },
+        });
+      }
+      if (map.getLayer("points")) map.moveLayer("points");
     }
 
     // ── Wind particles on the globe ──────────────────────────────────────────
@@ -254,7 +329,7 @@
       else resetParticles();
     });
 
-    return { show, hide, setDraw, isVisible: () => state.visible };
+    return { show, hide, setDraw, setOverlays, isVisible: () => state.visible };
   }
 
   window.WapkGlobe = { attach };

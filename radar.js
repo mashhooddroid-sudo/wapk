@@ -414,6 +414,8 @@
         state.pointForecast?.open(lat, lon);
       },
     }) || null;
+    // Whatever the flat map adds or removes (satellite and radar pictures, fires, strikes) follows on the globe.
+    state.map.on("layeradd layerremove", scheduleGlobeOverlays);
     els.map2dButton?.addEventListener("click", () => setGlobeView(false));
     els.map3dButton?.addEventListener("click", () => setGlobeView(true));
     state.forecast = window.WapkForecast?.attach(state.map, {
@@ -901,6 +903,7 @@
       state.satellitePending = null;
       overlay.setOpacity(getWeatherOpacity());
       describeSatellite(product);
+      scheduleGlobeOverlays();
     });
     overlay.once("error", () => {
       if (request !== state.satelliteRequest) return;
@@ -1496,6 +1499,7 @@
     state.satelliteOverlay?.setOpacity(opacity);
     state.satelliteStyled?.setOpacity(styledOpacity());
     state.satelliteHrv?.setOpacity(styledOpacity());
+    scheduleGlobeOverlays();
   }
 
   function getWeatherOpacity() {
@@ -1518,8 +1522,45 @@
     els.weatherLayerStatus.textContent = message;
   }
 
-  // 2D is the Leaflet map; 3D is the globe over it, opened at the same place. Satellite, radar and lightning
-  // are drawn on the flat map only for now, which the toast says.
+  // The flat map's satellite and radar pictures, fires and lightning strikes, for the globe (bottom to top by
+  // their map pane). PMD's pictures go through the worker, which adds the CORS header WebGL needs.
+  function globeOverlays() {
+    const images = [];
+    state.map.eachLayer((layer) => {
+      if (!(layer instanceof L.ImageOverlay) || !(layer.options.opacity > 0) || !layer._url) return;
+      const bounds = layer.getBounds();
+      let src = layer._url;
+      if (typeof src === "string" && src.startsWith("https://ffd.pmd.gov.pk/")) src = apiUrl(`/api/pmd-image?u=${encodeURIComponent(src)}`);
+      const order = Number(state.map.getPane(layer.options.pane || "overlayPane")?.style.zIndex) || 400;
+      images.push({ src, order, opacity: layer.options.opacity, bounds: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()] });
+    });
+    images.sort((a, b) => a.order - b.order);
+    const points = [];
+    if (state.map.hasLayer(state.fireLayer)) {
+      state.fireLayer.eachLayer((marker) => {
+        const { lat, lng } = marker.getLatLng();
+        points.push({ lat, lon: lng, color: marker.options.fillColor, radius: marker.options.radius, stroke: marker.options.color, opacity: marker.options.fillOpacity });
+      });
+    }
+    if (state.map.hasLayer(state.strikeLayer)) {
+      const colours = { "age-fresh": "#e2574c", "age-recent": "#f2b23a", "age-older": "#8f9aa8" };
+      // Oldest first, so the newest strikes are drawn on top.
+      state.visibleStrikes.slice(0, MAP_MARKER_LIMIT).reverse().forEach((strike) => {
+        const age = ageClass(strike);
+        points.push({ lat: strike.lat, lon: strike.lon, color: colours[age], radius: age === "age-older" ? 4 : 6, stroke: "#ffffff", opacity: age === "age-older" ? 0.75 : 1 });
+      });
+    }
+    return { images, points };
+  }
+
+  // Many layers change at once (a frame of strikes, a new picture), so the globe is updated once afterwards.
+  function scheduleGlobeOverlays() {
+    if (!state.globe?.isVisible()) return;
+    clearTimeout(state.globeOverlayTimer);
+    state.globeOverlayTimer = setTimeout(() => state.globe?.setOverlays(globeOverlays()), 120);
+  }
+
+  // 2D is the Leaflet map; 3D is the globe over it, opened at the same place, with the same layers.
   async function setGlobeView(globe) {
     if (!state.globe || globe === state.globe.isVisible()) return;
     els.map2dButton.setAttribute("aria-pressed", String(!globe));
@@ -1528,8 +1569,8 @@
     if (globe) {
       const center = state.map.getCenter();
       try {
+        state.globe.setOverlays(globeOverlays());
         await state.globe.show({ center: [center.lng, center.lat], zoom: Math.max(1.2, Math.min(state.map.getZoom() - 1, 2.3)) });
-        showToast("3D globe: forecast layers and wind. Satellite, radar and lightning are on the 2D map.");
       } catch (error) {
         showToast(error instanceof Error ? error.message : "The 3D globe could not load.");
         setGlobeView(false);

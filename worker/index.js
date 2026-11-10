@@ -136,6 +136,10 @@ export default {
         return await handlePmdRadar();
       }
 
+      if (url.pathname === "/api/pmd-image") {
+        return await handlePmdImage(url.searchParams.get("u"));
+      }
+
       if (url.pathname.startsWith("/api/imd-radar/")) {
         return await handleImdRadar(env, ctx, url.pathname.slice("/api/imd-radar/".length));
       }
@@ -1008,6 +1012,39 @@ async function ensureFireTable(env) {
 // worker remembers when each picture last changed (X-Image-Changed) and the map hides radars that stopped updating.
 const IMD_RADAR_CODES = new Set(["delhi", "jpr", "ptl", "bhj", "srn", "mur", "jot", "kuf", "sur", "ldn", "mks"]);
 const IMD_RADAR_CACHE_SECONDS = 300;
+
+// PMD radar pictures with CORS, for the 3D globe (WebGL cannot draw cross-site images without it). Only PMD
+// FFD's radar image folder is passed through; frames never change, so they are cached for a day.
+async function handlePmdImage(target) {
+  let source;
+  try {
+    source = new URL(target || "");
+  } catch {
+    return jsonResponse({ success: false, error: "Bad image address." }, 400);
+  }
+  if (source.protocol !== "https:" || source.hostname !== "ffd.pmd.gov.pk" || !source.pathname.startsWith("/storage/radar/") || !/\.(png|gif|jpe?g)$/i.test(source.pathname)) {
+    return jsonResponse({ success: false, error: "Only PMD radar images." }, 400);
+  }
+  const cacheKey = new Request(`https://wapk-cache.internal/pmd-image${source.pathname}`);
+  const cached = await caches.default.match(cacheKey);
+  if (cached) return cached;
+  let response;
+  try {
+    response = await fetch(source.toString(), {
+      headers: { "User-Agent": "WAPK-Weather-Alert-PK/1.0 (+https://wapk.pages.dev)" },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    return jsonResponse({ success: false, error: "PMD did not answer." }, 502);
+  }
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok || !contentType.startsWith("image/")) return jsonResponse({ success: false, error: `PMD returned ${response.status}.` }, 502);
+  const result = new Response(await response.arrayBuffer(), {
+    headers: { ...corsHeaders, "Content-Type": contentType, "Cache-Control": "public, max-age=86400" },
+  });
+  await caches.default.put(cacheKey, result.clone());
+  return result;
+}
 
 async function handleImdRadar(env, ctx, code) {
   if (!IMD_RADAR_CODES.has(code)) return jsonResponse({ success: false, error: "Unknown IMD radar." }, 404);
