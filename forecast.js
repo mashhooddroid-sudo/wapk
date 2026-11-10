@@ -900,7 +900,13 @@
           zIndexOffset: 1000,
           icon: L.divIcon({
             className: "map-picker",
-            html: '<button class="picker-bubble" type="button" aria-label="Forecast for this place"><span class="picker-value">…</span><span class="picker-wind"></span><span class="picker-more" aria-hidden="true">›</span></button><span class="picker-dot"></span>',
+            // Windy-style: a dot with a thin stick up to a dark box (layer name above it, the value, a detail
+            // line), an orange button that opens the forecast and a close button.
+            html: '<span class="picker-stick"></span><span class="picker-dot"></span>'
+              + '<div class="picker-card"><span class="picker-title"></span>'
+              + '<div class="picker-box"><span class="picker-text"><span class="picker-value">…</span><span class="picker-wind"></span></span>'
+              + '<button class="picker-open" type="button" aria-label="Open the forecast for this place"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>'
+              + '<button class="picker-close" type="button" aria-label="Hide the picker"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button></div>',
             iconSize: [0, 0],
             iconAnchor: [0, 0],
           }),
@@ -913,10 +919,16 @@
         });
         picker.marker.on("dragend", () => options.onPickerMoved?.(picker.lat, picker.lon));
         picker.marker.on("add", () => {
-          const bubble = picker.marker.getElement()?.querySelector(".picker-bubble");
-          if (!bubble) return;
-          L.DomEvent.disableClickPropagation(bubble);
-          bubble.addEventListener("click", () => options.onPickerOpen?.(picker.lat, picker.lon));
+          const element = picker.marker.getElement();
+          const card = element?.querySelector(".picker-card");
+          if (!card) return;
+          L.DomEvent.disableClickPropagation(card);
+          element.querySelector(".picker-open").addEventListener("click", () => options.onPickerOpen?.(picker.lat, picker.lon));
+          // Hidden until the map is tapped again (a tap moves the picker there and shows it).
+          element.querySelector(".picker-close").addEventListener("click", () => {
+            map.removeLayer(picker.marker);
+            options.onPickerClosed?.();
+          });
           updatePicker();
         });
         picker.marker.addTo(map);
@@ -945,17 +957,24 @@
       if (!node) return;
       const valueNode = node.querySelector(".picker-value");
       const windNode = node.querySelector(".picker-wind");
-      // Another layer (the infrared satellite) can supply the reading instead: { value, detail }.
+      const titleNode = node.querySelector(".picker-title");
+      // Near the right edge the card opens to the left of the stick, so it stays on screen.
+      const point = map.latLngToContainerPoint([picker.lat, picker.lon]);
+      node.classList.toggle("is-left", point.x > map.getSize().x - 230);
+      // Another layer (the infrared satellite) can supply the reading instead: { title, value, detail }.
       const other = options.pickerReading?.(picker.lat, picker.lon);
       if (other) {
+        titleNode.textContent = other.title || "Satellite";
         valueNode.textContent = other.value;
         windNode.replaceChildren(other.detail || "");
         return;
       }
       const data = state.lastData;
+      const shown = state.meta && state.enabled && hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
+      titleNode.textContent = shown ? `${shown.label}${shown.byHeight && els.level.value !== "10" ? ` · ${WIND_LEVELS[els.level.value].short}` : ""}` : "Forecast";
       if (!data || !state.meta || !insideGrid(picker.lat, picker.lon)) {
         valueNode.textContent = "Forecast";
-        windNode.replaceChildren();
+        windNode.replaceChildren("Open for the 7-day forecast");
         return;
       }
       const level = els.level.value;
@@ -993,6 +1012,11 @@
       }
       valueNode.textContent = reading || "Forecast";
       windNode.replaceChildren();
+      // Rain, thunder: the detail line says what is falling (the same rule as its symbols).
+      if (layer?.pattern) {
+        windNode.append(precipDetail(at, picker.lat, picker.lon, () => updatePicker()));
+        return;
+      }
       // With the wind layer the speed is already the main value; otherwise wind is the second line.
       if (!Number.isNaN(speed) && (!layer || layer.field)) {
         const arrow = document.createElement("span");
@@ -1661,6 +1685,20 @@
   // 0.5–3 °C sleet, above 3 °C rain. ECMWF's freezing rain / ice pellets (type 4) stay freezing rain up to 3 °C;
   // without a temperature, ECMWF's type (1 rain, 2 rain–snow mix, 3 snow, 4 freezing). weather-logic.js applies
   // the same rule to the overview.
+  // The picker's detail line for Rain, thunder: storm and what falls at the spot, from the same rule as the
+  // symbols (`at(field, nearest)` reads a field there; the temperature is corrected to the real terrain).
+  function precipDetail(at, lat, lon, onReady) {
+    if (!(at("precip") >= 0.1)) return "Dry";
+    let celsius = at("temp");
+    const ground = !Number.isNaN(at("orog")) ? terrainHeightAt(lat, lon, onReady) : null;
+    if (ground !== null && ground > 0 && !Number.isNaN(celsius)) celsius += (6.5 * (at("orog") - ground)) / 1000;
+    const kind = { snow: "snow", mix: "sleet", freezing: "freezing rain", rain: "rain" }[precipKind(Math.round(at("ptype", true)) || 1, celsius)];
+    const storm = Math.round(at("storm", true));
+    if (storm >= 5) return `Thunderstorm, hail, ${kind}`;
+    if (storm >= 1) return `Thunderstorm, ${kind}`;
+    return kind[0].toUpperCase() + kind.slice(1);
+  }
+
   function precipKind(type, celsius) {
     if (Number.isNaN(celsius)) return type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
     if (type === 4 && celsius <= 3) return "freezing";

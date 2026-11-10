@@ -68,13 +68,27 @@
 
 /* Picker: a pin with a bubble showing the chosen layer and the wind at that point. */
 .map-picker { width: 0 !important; height: 0 !important; }
-.picker-dot { position: absolute; left: -8px; top: -8px; width: 16px; height: 16px; box-sizing: border-box; border: 4px solid #1f7fd8; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px #000a; cursor: grab; }
-.picker-bubble { position: absolute; left: 0; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 11px; border: 0; border-radius: 10px; background: #0d2342f0; color: #fff; font: 700 13px/1.1 'DM Sans', sans-serif; white-space: nowrap; box-shadow: 0 6px 18px #0008; cursor: pointer; }
-.picker-bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; margin-left: -6px; border: 6px solid transparent; border-top-color: #0d2342f0; border-bottom: 0; }
-.picker-wind { display: inline-flex; align-items: center; gap: 3px; color: #bcd9ff; font-size: 12px; font-weight: 500; }
+/* Windy-style picker: a white dot, a thin stick and a dark card (layer name, value, detail line) with an orange
+   button that opens the forecast and a close button. The card opens left of the stick near the right edge. */
+.picker-dot { position: absolute; left: -6px; top: -6px; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid #fff; border-radius: 50%; background: #ffffffd0; box-shadow: 0 1px 6px #000c; cursor: grab; }
+.picker-stick { position: absolute; left: -1px; bottom: 0; width: 2px; height: 58px; background: #fff; box-shadow: 0 0 3px #0008; cursor: grab; }
+.picker-card { position: absolute; left: -1px; bottom: 56px; cursor: grab; }
+.map-picker.is-left .picker-card { left: auto; right: -1px; }
+.map-picker.is-left .picker-box { border-radius: 10px 10px 0 10px; }
+.picker-title { display: block; margin: 0 0 3px 2px; color: #fff; font: 600 12px/1.2 'DM Sans', sans-serif; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 6px #0009; }
+.map-picker.is-left .picker-title { text-align: right; margin: 0 2px 3px 0; }
+.picker-box { display: flex; align-items: center; gap: 10px; padding: 6px 7px 7px 11px; border-radius: 10px 10px 10px 0; background: #1d2433eb; color: #fff; box-shadow: 0 6px 18px #0009; }
+.picker-text { display: flex; flex-direction: column; gap: 2px; min-width: 84px; }
+.picker-value { font: 650 20px/1.1 'Manrope', 'DM Sans', sans-serif; white-space: nowrap; }
+.picker-wind { display: inline-flex; align-items: center; gap: 3px; color: #c9d6ea; font: 500 11px/1.2 'DM Sans', sans-serif; white-space: nowrap; }
 .picker-wind:empty { display: none; }
 .picker-arrow { display: inline-block; font-weight: 700; color: #7cc4ff; }
-.picker-more { margin-left: -2px; color: #7cc4ff; font-size: 17px; line-height: 1; }
+.picker-open { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: #f0a21c; color: #1d2433; cursor: pointer; box-shadow: 0 2px 6px #0007; }
+.picker-open svg, .picker-close svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.picker-open:hover { background: #ffb53a; }
+.picker-close { position: absolute; top: 2px; right: -12px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #1d2433; color: #fff; cursor: pointer; box-shadow: 0 2px 6px #0008; }
+.picker-close svg { width: 13px; height: 13px; stroke-width: 3.2; }
+.map-picker.is-left .picker-close { right: auto; left: -12px; }
 
 /* Point forecast: 7 days in 3-hour columns along the bottom of the map. */
 .map-detail { position: absolute; z-index: 15; left: 12px; right: 172px; bottom: 80px; max-height: 48%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--map-glass); color: var(--ink); box-shadow: 0 10px 28px #00112a50; backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }

@@ -1365,7 +1365,7 @@
     if (canvas.daylight && canvas.daylight[y * canvas.width + x] >= 1) return null;
     const celsius = irCelsius(canvas.grey[y * canvas.width + x]);
     const value = window.Atmos?.unit === "F" ? `${Math.round((celsius * 9) / 5 + 32)}°F` : `${Math.round(celsius)}°C`;
-    return { value, detail: celsius < 2 ? "Cloud top" : "Ground, no cloud" };
+    return { title: `Satellite · ${currentSatelliteProduct().label}`, value, detail: celsius < 2 ? "Cloud top" : "Ground, no cloud" };
   }
 
   // Windy-style pictures carry their own transparency, so the default 70 % setting shows them fully.
