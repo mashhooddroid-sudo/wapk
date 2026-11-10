@@ -290,10 +290,20 @@
       savePreferences();
       render();
     });
+    // Dragging the slider: the time label follows at once, the map redraws at most every SLIDER_REDRAW_MS
+    // and once more where the slider stops, so hours only passed over are never downloaded or drawn.
+    let sliderTimer = 0;
+    let sliderDrawnAt = 0;
     els.slider.addEventListener("input", () => {
       stopPlayback();
       state.hour = Number(els.slider.value);
-      render();
+      if (state.meta) renderTime();
+      clearTimeout(sliderTimer);
+      const wait = SLIDER_REDRAW_MS - (performance.now() - sliderDrawnAt);
+      sliderTimer = setTimeout(() => {
+        sliderDrawnAt = performance.now();
+        render();
+      }, Math.max(0, wait));
     });
     els.play.addEventListener("click", () => (state.playTimer ? stopPlayback() : startPlayback()));
     // Clicking the map moves the picker there (Windy-style), inside the forecast area.
@@ -1685,6 +1695,8 @@
   // snows (fainter for a rain–snow mix), and
   // nothing for plain rain. Only where at least 0.1 mm/h falls, so symbols never sit on dry ground.
   const PATTERN_SPACING = 15;
+  // Quickest redraw rate while the time slider is dragged.
+  const SLIDER_REDRAW_MS = 150;
 
   // What falls, from the 2 m temperature at the real terrain height (the rule asked for): below 0.5 °C snow,
   // 0.5–3 °C sleet, above 3 °C rain. ECMWF's freezing rain / ice pellets (type 4) stay freezing rain up to 3 °C;
@@ -1716,7 +1728,17 @@
   // across) rises above, from tiles with one height per screen pixel. A symbol stands for its patch: it shows
   // snow when a fair share of the patch is high enough, so zoomed out a mountain range shows snow and a wide
   // valley does not, and zooming in only adds detail instead of depending on whether a symbol sits on a peak.
+  // The last view's heights: they depend only on where the map is, not on the hour.
+  let pointHeightsCache = null;
   async function pointHeights(lats, lons, zoom) {
+    const viewKey = `${zoom}|${lats.length}|${lats[0]}|${lons[0]}|${lats[lats.length - 1]}|${lons[lons.length - 1]}`;
+    if (pointHeightsCache?.key === viewKey) return pointHeightsCache.heights;
+    const heights = await computePointHeights(lats, lons, zoom);
+    pointHeightsCache = { key: viewKey, heights };
+    return heights;
+  }
+
+  async function computePointHeights(lats, lons, zoom) {
     const z = Math.max(3, Math.min(12, Math.round(zoom)));
     const span = 2 ** z;
     const reach = Math.floor(PATTERN_SPACING / 2) * 2 ** (z - zoom);
