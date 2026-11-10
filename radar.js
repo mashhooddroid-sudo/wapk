@@ -52,6 +52,7 @@
     mapSearchForm: document.getElementById("mapSearchForm"),
     mapSearchInput: document.getElementById("mapSearchInput"),
     mapSearchResults: document.getElementById("mapSearchResults"),
+    mapLocateButton: document.getElementById("mapLocateButton"),
     alertCard: document.getElementById("radarAlertCard"),
     alertList: document.getElementById("radarAlertList"),
     alertText: document.getElementById("radarAlertText"),
@@ -448,6 +449,27 @@
       state.map.flyTo([lat, lon], Math.max(state.map.getZoom(), 7), { duration: 0.7 });
       state.forecast?.setPicker(lat, lon);
       state.pointForecast?.open(lat, lon, label);
+    });
+    // The search box's locate button: the same, for the device's position.
+    els.mapLocateButton?.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        showToast("Location is not available in this browser.", "danger");
+        return;
+      }
+      els.mapLocateButton.classList.add("is-busy");
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => {
+          els.mapLocateButton.classList.remove("is-busy");
+          state.map.flyTo([coords.latitude, coords.longitude], Math.max(state.map.getZoom(), 9), { duration: 0.7 });
+          state.forecast?.setPicker(coords.latitude, coords.longitude);
+          state.pointForecast?.open(coords.latitude, coords.longitude, "Current location");
+        },
+        (error) => {
+          els.mapLocateButton.classList.remove("is-busy");
+          showToast(error.code === 1 ? "Location permission was denied." : `Location unavailable: ${error.message}`, "danger");
+        },
+        { enableHighAccuracy: true, maximumAge: 60_000, timeout: 12_000 },
+      );
     });
     // On phones the layer list is a sheet opened from the round Layers button; tapping the map closes it.
     els.layersButton.addEventListener("click", () => setLayersOpen(!els.stage.classList.contains("is-rail-open")));
