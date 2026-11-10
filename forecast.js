@@ -17,7 +17,8 @@
   const PARTICLE_STYLE_DEFAULT = { speed: 1, length: 1, thickness: 1, density: 1 };
   const ISOBAR_STEP_HPA = 4;
   // Decoded field-steps kept in memory (about 300 KB each).
-  const CACHE_LIMIT = 80;
+  // Decoded fields kept in memory: a 9 km field is about 1.9 MB, a 0.25° one about 0.3 MB, so the limit is in values.
+  const CACHE_VALUES = 15_000_000;
   // Model steps fetched ahead of the visible time (each step is 3 hours).
   const PREFETCH_STEPS = 3;
   const PREFERENCES_KEY = "wapk.forecastMap";
@@ -463,7 +464,13 @@
           values.grid = grid;
           if (state.meta === meta) {
             state.cache.set(key, values);
-            while (state.cache.size > CACHE_LIMIT) state.cache.delete(state.cache.keys().next().value);
+            let kept = 0;
+            for (const cached of state.cache.values()) kept += cached.length;
+            for (const [oldKey, oldValues] of state.cache) {
+              if (kept <= CACHE_VALUES || state.cache.size <= 8) break;
+              state.cache.delete(oldKey);
+              kept -= oldValues.length;
+            }
           }
           return values;
         })
@@ -636,7 +643,7 @@
         const valuePair = data[layerField(layer, level)];
         terrain.setSource({
           sample: (lats, lons) => {
-            const plan = buildPlan(gridOfPair(valuePair, state.meta.grid), lats, lons);
+            const plan = planFor(gridOfPair(valuePair, state.meta.grid), lats, lons);
             const orogPlan = gridOfPair(data.orog, state.meta.grid) === gridOfPair(valuePair, state.meta.grid) ? plan : buildPlan(gridOfPair(data.orog, state.meta.grid), lats, lons);
             return { value: applyPlan(plan, valuePair), ground: applyPlan(orogPlan, data.orog) };
           },
@@ -1902,11 +1909,13 @@
         const padY = Math.round(size.y * 0.3);
         const columns = Math.ceil((size.x + 2 * padX) / stride);
         const rows = Math.ceil((size.y + 2 * padY) / stride);
+        // Hour steps keep the view, so its sample positions, terrain and sampling plans are reused.
+        const viewKey = `${map.getBounds().toBBoxString()}|${zoom}|${columns}x${rows}`;
+        if (this._view?.key !== viewKey) this._view = { key: viewKey };
+        const view = this._view;
         // Web Mercator: longitude depends only on x and latitude only on y.
-        const colLon = new Float64Array(columns);
-        const rowLat = new Float64Array(rows);
-        for (let col = 0; col < columns; col += 1) colLon[col] = map.containerPointToLatLng([col * stride - padX, 0]).lng;
-        for (let row = 0; row < rows; row += 1) rowLat[row] = map.containerPointToLatLng([0, row * stride - padY]).lat;
+        const colLon = (view.colLon ||= Float64Array.from({ length: columns }, (_, col) => map.containerPointToLatLng([col * stride - padX, 0]).lng));
+        const rowLat = (view.rowLat ||= Float64Array.from({ length: rows }, (_, row) => map.containerPointToLatLng([0, row * stride - padY]).lat));
 
         // Terrain tiles with about one height per drawn pixel.
         const tileZoom = Math.max(3, Math.min(12, Math.round(zoom) + (stride === 3 ? -1 : 0) - 1));
@@ -1917,24 +1926,26 @@
         const x1 = Math.floor(xs[columns - 1] / 256);
         const y0 = Math.max(0, Math.floor(ys[0] / 256));
         const y1 = Math.min(tileSpan - 1, Math.floor(ys[rows - 1] / 256));
-        const tiles = new Map();
+        const tiles = (view.tiles ||= new Map());
         const jobs = [];
         for (let ty = y0; ty <= y1; ty += 1) {
           for (let tx = x0; tx <= x1; tx += 1) {
             const wrapped = ((tx % tileSpan) + tileSpan) % tileSpan;
-            jobs.push(terrainTile(tileZoom, wrapped, ty).then((heights) => tiles.set(`${tx}/${ty}`, heights)));
+            if (!tiles.has(`${tx}/${ty}`)) jobs.push(terrainTile(tileZoom, wrapped, ty).then((heights) => tiles.set(`${tx}/${ty}`, heights)));
           }
         }
         await Promise.all(jobs);
         if (drawId !== this._drawId || !this._canvas) return;
 
-        const lats = new Float64Array(columns * rows);
-        const lons = new Float64Array(columns * rows);
-        for (let row = 0; row < rows; row += 1) {
-          lats.fill(rowLat[row], row * columns, (row + 1) * columns);
-          lons.set(colLon, row * columns);
+        if (!view.lats) {
+          view.lats = new Float64Array(columns * rows);
+          view.lons = new Float64Array(columns * rows);
+          for (let row = 0; row < rows; row += 1) {
+            view.lats.fill(rowLat[row], row * columns, (row + 1) * columns);
+            view.lons.set(colLon, row * columns);
+          }
         }
-        const { value, ground } = source.sample(lats, lons);
+        const { value, ground } = source.sample(view.lats, view.lons);
         const colours = colorTable(source.layerKey, source.theme);
         const image = new ImageData(columns, rows);
         const pixels = image.data;
