@@ -37,7 +37,11 @@
   const PMD_PRODUCT_NAMES = { sri: "surface rain rate", cappi01: "1 km rain rate", rain12: "12-hour rainfall" };
   const API_BASE_URL = "https://lightning-weatherx-pk-api.mashhood-droid.workers.dev";
   // ECMWF forecast map data, published every 6 hours by pipeline/build_forecast.py.
-  const FORECAST_DATA_URL = "https://wapk-forecast.pages.dev/";
+  // The preview site (and ?data=preview) reads the forecast data published to its preview branch, so new data
+  // formats can be tried before the live site uses them.
+  const FORECAST_DATA_URL = location.hostname.startsWith("health-preview") || new URLSearchParams(location.search).get("data") === "preview"
+    ? "https://preview.wapk-forecast.pages.dev/"
+    : "https://wapk-forecast.pages.dev/";
   const LEAFLET_BASE = "https://unpkg.com/leaflet@1.9.4/dist/";
 
   const els = {

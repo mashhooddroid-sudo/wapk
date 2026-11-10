@@ -42,8 +42,10 @@
     temp: {
       label: "Temperature", type: "Temperature", unit: "°C", field: (level) => (level === "10" ? "temp" : `t${level}`), byHeight: true,
       stops: TEMP_STOPS,
+      // At the surface, corrected for real terrain: about 6.5 °C cooler per 1,000 m above the model's ground.
+      elevationLapse: (level) => (level === "10" ? 6.5 : 0),
     },
-    dew: { label: "Dew point", type: "Dew point", unit: "°C", field: "dew", stops: TEMP_STOPS },
+    dew: { label: "Dew point", type: "Dew point", unit: "°C", field: "dew", stops: TEMP_STOPS, elevationLapse: () => 2 },
     // Humidity follows the height picker like temperature.
     humidity: {
       label: "Humidity", type: "Relative humidity", unit: "%", field: (level) => (level === "10" ? "rh" : `r${level}`), byHeight: true,
@@ -206,6 +208,12 @@
     const symbols = createSymbolLayer({ pane: "forecastSymbols" });
     const isobars = createIsobarLayer({ pane: "forecastSymbols" });
     const precipPattern = createPrecipPatternLayer({ pane: "forecastSymbols" });
+    // Zoomed in, temperature and dew point are redrawn for the view with real terrain (createTerrainLayer); the
+    // plain colour picture is hidden meanwhile, and comes back while zooming and when zoomed out.
+    const terrain = createTerrainLayer({ pane: "forecastColor" }, (active) => {
+      state.terrainActive = active;
+      if (state.colorOverlay) state.colorOverlay.setOpacity(active ? 0 : LAYERS[state.layer]?.opacity || 0.6);
+    });
     // The colour field is drawn into one canvas placed on the map like an image, so changing the hour
     // repaints pixels instead of encoding a new picture and swapping map layers.
     const colorCanvas = document.createElement("canvas");
@@ -429,7 +437,8 @@
       }
       if (state.inflight.has(key)) return state.inflight.get(key);
       const meta = state.meta;
-      const url = state.base + meta.path.replace("{field}", field).replace("{step}", String(step));
+      const grid = gridOf(field);
+      const url = state.base + meta.path.replace("{field}", field).replace("{step}", String(meta.fields[field]?.static ? 0 : step));
       const request = fetch(url, { signal: AbortSignal.timeout(30_000) })
         .then((response) => {
           // A new run was published and this one removed: reload the index, then the caller retries.
@@ -443,13 +452,15 @@
         .then((buffer) => {
           const bytes = new Uint8Array(buffer);
           // One byte per grid point; anything else (an error page, a file from another format) is not data.
-          if (bytes.length !== meta.grid.nx * meta.grid.ny) {
+          if (bytes.length !== grid.nx * grid.ny) {
             loadMeta();
             throw new Error("the forecast file was not valid");
           }
           const table = meta.decoders[field];
           const values = new Float32Array(bytes.length);
           for (let index = 0; index < bytes.length; index += 1) values[index] = table[bytes[index]];
+          // Sampling code reads the grid from the values themselves (see gridOfPair).
+          values.grid = grid;
           if (state.meta === meta) {
             state.cache.set(key, values);
             while (state.cache.size > CACHE_LIMIT) state.cache.delete(state.cache.keys().next().value);
@@ -503,6 +514,12 @@
     }
 
     // Whether the published forecast includes a layer's field (at the chosen height).
+    // Since the 9 km data (FORMAT_VERSION 9) fields live on one of two grids: "fine" (0.1°) or the main 0.25°.
+    function gridOf(field) {
+      const spec = state.meta.fields[field];
+      return (spec?.grid && state.meta.grids?.[spec.grid]) || state.meta.grid;
+    }
+
     function hasData(layer) {
       return !layer?.field || Boolean(state.meta.fields[layerField(layer, els.level.value)]);
     }
@@ -513,6 +530,7 @@
       if (layer) (layer.field ? [layerField(layer, els.level.value)] : windFields()).forEach((field) => fields.add(field));
       // Rain, thunder also needs the precipitation type and storm category for its symbols.
       layer?.extraFields?.filter((field) => state.meta.fields[field]).forEach((field) => fields.add(field));
+      if (layer?.elevationLapse?.(els.level.value) && state.meta.fields.orog) fields.add("orog");
       // Wind is always loaded: the picker shows it whichever layer is on.
       windFields().forEach((field) => fields.add(field));
       return [...fields];
@@ -598,14 +616,14 @@
         if (!state.colorOverlay) {
           state.colorOverlay = new CanvasOverlay(colorCanvas, bounds, {
             pane: "forecastColor",
-            opacity: layer.opacity || 0.6,
+            opacity: state.terrainActive ? 0 : layer.opacity || 0.6,
             interactive: false,
             className: "forecast-color",
             attribution: ATTRIBUTION,
           }).addTo(map);
         } else {
           state.colorOverlay.setBounds(L.latLngBounds(bounds));
-          state.colorOverlay.setOpacity(layer.opacity || 0.6);
+          state.colorOverlay.setOpacity(state.terrainActive ? 0 : layer.opacity || 0.6);
         }
         softenCategories();
       } else if (state.colorOverlay) {
@@ -613,9 +631,26 @@
         state.colorOverlay = null;
       }
 
+      const lapse = (layer && data.orog && layer.elevationLapse?.(level)) || 0;
+      if (lapse) {
+        const valuePair = data[layerField(layer, level)];
+        terrain.setSource({
+          sample: (lats, lons) => {
+            const plan = buildPlan(gridOfPair(valuePair, state.meta.grid), lats, lons);
+            const orogPlan = gridOfPair(data.orog, state.meta.grid) === gridOfPair(valuePair, state.meta.grid) ? plan : buildPlan(gridOfPair(data.orog, state.meta.grid), lats, lons);
+            return { value: applyPlan(plan, valuePair), ground: applyPlan(orogPlan, data.orog) };
+          },
+          lapse, layerKey: state.layer, theme: state.theme, opacity: layer.opacity || 0.6,
+        });
+        if (!map.hasLayer(terrain)) terrain.addTo(map);
+        else terrain.redraw();
+      } else if (map.hasLayer(terrain)) {
+        map.removeLayer(terrain);
+      }
+
       if (layer?.symbols) {
         const pair = data[layer.field];
-        symbols.setSource(layer.symbols, (lats, lons) => applyPlan(planFor(state.meta.grid, lats, lons), pair, undefined, true));
+        symbols.setSource(layer.symbols, (lats, lons) => applyPlan(planFor(gridOfPair(pair, state.meta.grid), lats, lons), pair, undefined, true));
         if (!map.hasLayer(symbols)) symbols.addTo(map);
         else symbols.redraw();
       } else if (map.hasLayer(symbols)) {
@@ -624,7 +659,7 @@
 
       if (layer?.pattern) {
         precipPattern.setSource((lats, lons) => {
-          const plan = planFor(state.meta.grid, lats, lons);
+          const plan = planFor(gridOfPair(data[layer.field], state.meta.grid), lats, lons);
           return {
             rate: applyPlan(plan, data[layer.field]),
             ptype: data.ptype ? applyCategoryPlan(plan, data.ptype) : null,
@@ -638,8 +673,9 @@
       }
 
       if (layer?.isobars) {
-        const pair = smoothPair(data[layer.field], state.meta.grid);
-        isobars.setSource((lats, lons) => applyPlan(planFor(state.meta.grid, lats, lons), pair), state.theme);
+        const pressureGrid = gridOfPair(data[layer.field], state.meta.grid);
+        const pair = smoothPair(data[layer.field], pressureGrid);
+        isobars.setSource((lats, lons) => applyPlan(planFor(pressureGrid, lats, lons), pair), state.theme);
         if (!map.hasLayer(isobars)) isobars.addTo(map);
         else isobars.redraw();
       } else if (map.hasLayer(isobars)) {
@@ -653,7 +689,7 @@
         particles.setSpeedScale(WIND_LEVELS[level].speed);
         const [uField, vField] = windFields();
         particles.setField((lats, lons) => {
-          const plan = planFor(state.meta.grid, lats, lons);
+          const plan = planFor(gridOfPair(data[uField], state.meta.grid), lats, lons);
           return { u: applyPlan(plan, data[uField]), v: applyPlan(plan, data[vField]) };
         });
         particles.setReducedMotion(reducedMotion.matches);
@@ -670,7 +706,7 @@
         bounds: layer ? state.colorOverlay.getBounds() : null,
         opacity: layer?.opacity || 0.6,
         wind: showWind ? (lats, lons) => {
-          const plan = planFor(state.meta.grid, lats, lons);
+          const plan = planFor(gridOfPair(data[globeU], state.meta.grid), lats, lons);
           return { u: applyPlan(plan, data[globeU]), v: applyPlan(plan, data[globeV]) };
         } : null,
         windColor: (layer && !layer.isCloud) || state.theme === "dark" ? "rgba(255,255,255,0.85)" : "rgba(16,40,72,0.8)",
@@ -694,7 +730,7 @@
         colorCanvas.style.filter = "";
         return;
       }
-      const cellPixels = (parseFloat(colorCanvas.style.width) || colorCanvas.width) / state.meta.grid.nx;
+      const cellPixels = (parseFloat(colorCanvas.style.width) || colorCanvas.width) / gridOf(layer.field).nx;
       colorCanvas.style.filter = `blur(${Math.min(14, Math.max(1, cellPixels * 0.6)).toFixed(1)}px)`;
     }
     map.on("zoomend", softenCategories);
@@ -709,6 +745,7 @@
       if (map.hasLayer(symbols)) map.removeLayer(symbols);
       if (map.hasLayer(isobars)) map.removeLayer(isobars);
       if (map.hasLayer(precipPattern)) map.removeLayer(precipPattern);
+      if (map.hasLayer(terrain)) map.removeLayer(terrain);
       options.onDraw?.(null);
     }
 
@@ -914,8 +951,12 @@
         return;
       }
       const level = els.level.value;
-      const plan = buildPlan(state.meta.grid, new Float64Array([picker.lat]), new Float64Array([picker.lon]));
-      const at = (field, nearest = false) => (data[field] ? applyPlan(plan, data[field], undefined, nearest)[0] : NaN);
+      const plans = new Map();
+      const planAt = (grid) => {
+        if (!plans.has(grid)) plans.set(grid, buildPlan(grid, new Float64Array([picker.lat]), new Float64Array([picker.lon])));
+        return plans.get(grid);
+      };
+      const at = (field, nearest = false) => (data[field] ? applyPlan(planAt(gridOfPair(data[field], state.meta.grid)), data[field], undefined, nearest)[0] : NaN);
       const [uField, vField] = windFields();
       const u = at(uField);
       const v = at(vField);
@@ -930,6 +971,12 @@
       } else if (layer) {
         let value = at(layerField(layer, level));
         if (layer.convert) value = layer.convert(value);
+        // Temperature and dew point at the exact spot: corrected from the model's ground to the real terrain there.
+        const lapse = layer.elevationLapse?.(level);
+        if (lapse && data.orog && !Number.isNaN(value)) {
+          const ground = terrainHeightAt(picker.lat, picker.lon, () => updatePicker());
+          if (ground !== null) value += (lapse * (at("orog") - ground)) / 1000;
+        }
         if (Number.isNaN(value)) reading = "—";
         else if (layer.unit === "°C") reading = options.getUnit?.() === "F" ? `${Math.round((value * 9) / 5 + 32)}°F` : `${Math.round(value)}°C`;
         else if (state.layer === "aqi") reading = `AQI ${Math.round(value)}`;
@@ -999,6 +1046,11 @@
 
   // Plans are reused while the grid and the points are the same arrays.
   const plans = new WeakMap();
+  // The grid a loaded field pair is on (decoded arrays carry it), or `fallback` for data without one.
+  function gridOfPair(pair, fallback) {
+    return pair?.a?.grid || fallback;
+  }
+
   function planFor(grid, lats, lons) {
     const cached = plans.get(lats);
     if (cached && cached.grid === grid && cached.lons === lons) return cached.plan;
@@ -1120,7 +1172,7 @@
   // Draws the field into `canvas` and returns the map bounds it covers. The canvas is reused for every hour and layer.
   function drawColorField(canvas, meta, data, layerKey, level, theme) {
     const layer = LAYERS[layerKey];
-    const geometry = colorGeometry(meta.grid);
+    const geometry = colorGeometry(gridOfPair(layer.field ? data[layerField(layer, level)] : data[`u${level}`], meta.grid));
     const { width, height, plan, edge } = geometry;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
@@ -1734,6 +1786,193 @@
       },
     });
     return new PrecipPatternClass(options);
+  }
+
+  // ── Real terrain (AWS Terrain Tiles, Terrarium encoding; open data) ───────────
+  const TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+  const TERRAIN_MIN_ZOOM = 6;
+  const TERRAIN_TILE_LIMIT = 120;
+  const terrainTiles = new Map();
+
+  // Heights (m) of one 256 × 256 tile, or null where it cannot load. Recent tiles are kept.
+  function terrainTile(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    if (terrainTiles.has(key)) return terrainTiles.get(key);
+    const request = new Promise((resolve) => {
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 256;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(image, 0, 0);
+        const pixels = context.getImageData(0, 0, 256, 256).data;
+        const heights = new Float32Array(256 * 256);
+        for (let index = 0; index < heights.length; index += 1) {
+          heights[index] = pixels[index * 4] * 256 + pixels[index * 4 + 1] + pixels[index * 4 + 2] / 256 - 32768;
+        }
+        resolve(heights);
+      };
+      image.onerror = () => resolve(null);
+      image.src = TERRAIN_URL.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+    });
+    terrainTiles.set(key, request);
+    while (terrainTiles.size > TERRAIN_TILE_LIMIT) terrainTiles.delete(terrainTiles.keys().next().value);
+    return request;
+  }
+
+  // World pixel position at zoom z (Web Mercator, 256-pixel tiles).
+  const worldX = (lon, z) => ((lon + 180) / 360) * 256 * 2 ** z;
+  const worldY = (lat, z) => {
+    const sin = Math.sin((lat * Math.PI) / 180);
+    return (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * 256 * 2 ** z;
+  };
+
+  // Height (m) of one spot from a detailed tile, or null while it loads (then `onReady` runs).
+  const spotHeights = new Map();
+  function terrainHeightAt(lat, lon, onReady) {
+    const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    if (spotHeights.has(key)) return spotHeights.get(key);
+    const z = 12;
+    const x = worldX(lon, z);
+    const y = worldY(lat, z);
+    terrainTile(z, Math.floor(x / 256), Math.floor(y / 256)).then((heights) => {
+      spotHeights.set(key, heights ? heights[(Math.floor(y) % 256) * 256 + (Math.floor(x) % 256)] : null);
+      if (spotHeights.size > 200) spotHeights.delete(spotHeights.keys().next().value);
+      onReady?.();
+    });
+    return null;
+  }
+
+  // Temperature or dew point redrawn for the view, zoomed in: the model value moved from the model's ground to
+  // the real terrain height under each pixel (`lapse` °C per 1,000 m), so hill stations and ridges read cooler and
+  // valleys warmer. Drawn a little beyond the screen so a short pan shows no edge; redrawn after each move.
+  let TerrainLayerClass = null;
+  function createTerrainLayer(options, onActive) {
+    TerrainLayerClass ||= L.Layer.extend({
+      initialize(layerOptions) {
+        L.setOptions(this, layerOptions);
+        this._source = null;
+        this._drawId = 0;
+      },
+
+      onAdd(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create("canvas", "forecast-terrain");
+        this._canvas.style.display = "none";
+        this.getPane().appendChild(this._canvas);
+        map.on("moveend resize", this.redraw, this);
+        map.on("zoomstart", this._hide, this);
+        this.redraw();
+      },
+
+      onRemove(map) {
+        map.off("moveend resize", this.redraw, this);
+        map.off("zoomstart", this._hide, this);
+        this._drawId += 1;
+        this._canvas.remove();
+        this._canvas = null;
+        onActive(false);
+      },
+
+      // { sample(lats, lons) → { value, ground }, lapse, layerKey, theme, opacity }
+      setSource(source) {
+        this._source = source;
+      },
+
+      _hide() {
+        this._drawId += 1;
+        if (this._canvas) this._canvas.style.display = "none";
+        onActive(false);
+      },
+
+      async redraw() {
+        const map = this._map;
+        const source = this._source;
+        if (!map || !this._canvas || !source) return;
+        const drawId = ++this._drawId;
+        const zoom = map.getZoom();
+        if (zoom < TERRAIN_MIN_ZOOM) {
+          this._hide();
+          return;
+        }
+        const size = map.getSize();
+        const stride = size.x < 760 ? 3 : 2;
+        const padX = Math.round(size.x * 0.3);
+        const padY = Math.round(size.y * 0.3);
+        const columns = Math.ceil((size.x + 2 * padX) / stride);
+        const rows = Math.ceil((size.y + 2 * padY) / stride);
+        // Web Mercator: longitude depends only on x and latitude only on y.
+        const colLon = new Float64Array(columns);
+        const rowLat = new Float64Array(rows);
+        for (let col = 0; col < columns; col += 1) colLon[col] = map.containerPointToLatLng([col * stride - padX, 0]).lng;
+        for (let row = 0; row < rows; row += 1) rowLat[row] = map.containerPointToLatLng([0, row * stride - padY]).lat;
+
+        // Terrain tiles with about one height per drawn pixel.
+        const tileZoom = Math.max(3, Math.min(12, Math.round(zoom) + (stride === 3 ? -1 : 0) - 1));
+        const xs = Array.from(colLon, (lon) => worldX(lon, tileZoom));
+        const ys = Array.from(rowLat, (lat) => worldY(lat, tileZoom));
+        const tileSpan = 2 ** tileZoom;
+        const x0 = Math.floor(xs[0] / 256);
+        const x1 = Math.floor(xs[columns - 1] / 256);
+        const y0 = Math.max(0, Math.floor(ys[0] / 256));
+        const y1 = Math.min(tileSpan - 1, Math.floor(ys[rows - 1] / 256));
+        const tiles = new Map();
+        const jobs = [];
+        for (let ty = y0; ty <= y1; ty += 1) {
+          for (let tx = x0; tx <= x1; tx += 1) {
+            const wrapped = ((tx % tileSpan) + tileSpan) % tileSpan;
+            jobs.push(terrainTile(tileZoom, wrapped, ty).then((heights) => tiles.set(`${tx}/${ty}`, heights)));
+          }
+        }
+        await Promise.all(jobs);
+        if (drawId !== this._drawId || !this._canvas) return;
+
+        const lats = new Float64Array(columns * rows);
+        const lons = new Float64Array(columns * rows);
+        for (let row = 0; row < rows; row += 1) {
+          lats.fill(rowLat[row], row * columns, (row + 1) * columns);
+          lons.set(colLon, row * columns);
+        }
+        const { value, ground } = source.sample(lats, lons);
+        const colours = colorTable(source.layerKey, source.theme);
+        const image = new ImageData(columns, rows);
+        const pixels = image.data;
+        for (let row = 0; row < rows; row += 1) {
+          const py = Math.floor(ys[row]);
+          const ty = Math.floor(py / 256);
+          for (let col = 0; col < columns; col += 1) {
+            const index = row * columns + col;
+            let v = value[index];
+            if (Number.isNaN(v)) continue;
+            const px = Math.floor(xs[col]);
+            const heights = tiles.get(`${Math.floor(px / 256)}/${ty}`);
+            // Sea and missing terrain keep the model value.
+            if (heights) {
+              const height = heights[(py - ty * 256) * 256 + (px - Math.floor(px / 256) * 256)];
+              if (height > 0 && !Number.isNaN(ground[index])) v += (source.lapse * (ground[index] - height)) / 1000;
+            }
+            const entry = Math.min(colours.size - 1, Math.max(0, Math.round(((v - colours.first) / colours.span) * (colours.size - 1)))) * 4;
+            const out = index * 4;
+            pixels[out] = colours.table[entry];
+            pixels[out + 1] = colours.table[entry + 1];
+            pixels[out + 2] = colours.table[entry + 2];
+            pixels[out + 3] = colours.table[entry + 3];
+          }
+        }
+        const canvas = this._canvas;
+        canvas.width = columns;
+        canvas.height = rows;
+        canvas.getContext("2d").putImageData(image, 0, 0);
+        canvas.style.width = `${columns * stride}px`;
+        canvas.style.height = `${rows * stride}px`;
+        canvas.style.opacity = String(source.opacity);
+        L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([-padX, -padY]));
+        canvas.style.display = "";
+        onActive(true);
+      },
+    });
+    return new TerrainLayerClass(options);
   }
 
   let ParticleLayerClass = null;
