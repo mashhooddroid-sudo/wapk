@@ -1,4 +1,4 @@
-"""Builds the WAPK forecast map data from ECMWF IFS open data (0.25°, CC-BY-4.0).
+"""Builds the WAPK forecast map data from ECMWF IFS open data (CC-BY-4.0): surface at 0.1° (9 km), levels at 0.25°.
 
 Downloads the latest IFS run for the next 7 days (3-hourly, 6-hourly after 144 h), crops the WAPK region, and writes
 one small binary file per field and step plus `latest.json` describing them. The output folder is
@@ -42,7 +42,12 @@ MISSING = 255
 # Bump whenever the fields or their encoding change. It is part of the run id and the file paths, so
 # browsers never mix files cached under the old format (run files are cached as immutable for a year),
 # and the scheduled build republishes even when ECMWF's run itself has not changed.
-FORMAT_VERSION = 8
+FORMAT_VERSION = 9
+# Surface fields come from ECMWF's 0.1° (about 9 km) open data; the ones where detail matters (temperature,
+# rain, snow, cloud, storms …) are stored on that FINE grid, the smooth ones (pressure, solar, 10 m wind for
+# the particles …) are sampled down to the 0.25° grid with the pressure levels, keeping downloads small.
+FINE_RESOL = "0p1"
+FINE_FIELDS = {"temp", "dew", "rh", "precip", "rainacc", "snowacc", "snowdepth", "ptype", "storm", "cloud", "gust", "freezing", "orog"}
 # Air quality (US AQI) is not in ECMWF's open data. It comes from Open-Meteo's air-quality API (CAMS global
 # forecast, the same source as the site's Health section), sampled every AQI_STEP degrees and interpolated
 # onto the forecast grid. CAMS reaches about 4–5 days ahead; later steps are missing.
@@ -77,6 +82,9 @@ FIELDS = {
     # Thunderstorm forecast as an ordered category: see storm_category.
     "storm": {"encoding": "linear", "offset": 0.0, "scale": 1.0, "unit": "category"},
     "aqi": {"encoding": "linear", "offset": 0.0, "scale": 500 / 254, "unit": "US AQI"},
+    # The model's own ground height (m) on the fine grid, written once per run: the map corrects temperature
+    # for the difference between it and the real terrain.
+    "orog": {"encoding": "linear", "offset": -500.0, "scale": 9000 / 254, "unit": "m", "static": True},
     "u10": WIND,
     "v10": WIND,
     **{f"{component}{level}": WIND for level in LEVELS for component in ("u", "v")},
@@ -235,6 +243,21 @@ def retrieve(client, run, steps, target, **request):
             time.sleep(20 * (attempt + 1))
 
 
+def regrid(values, source, target):
+    """Bilinear resampling between two grids of the same REGION (north-west origin, regular steps)."""
+    rows = np.clip(np.arange(target["ny"]) * target["step"] / source["step"], 0, source["ny"] - 1)
+    cols = np.clip(np.arange(target["nx"]) * target["step"] / source["step"], 0, source["nx"] - 1)
+    r0 = np.minimum(np.floor(rows).astype(int), source["ny"] - 2)
+    c0 = np.minimum(np.floor(cols).astype(int), source["nx"] - 2)
+    ty = (rows - r0)[:, None]
+    tx = (cols - c0)[None, :]
+    a = values[r0][:, c0]
+    b = values[r0][:, c0 + 1]
+    c = values[r0 + 1][:, c0]
+    d = values[r0 + 1][:, c0 + 1]
+    return ((a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty).astype(np.float32)
+
+
 def fetch_aqi(run, steps, grid):
     """US AQI at every step on the forecast grid (NaN where CAMS has no value), or None if Open-Meteo fails.
 
@@ -317,7 +340,11 @@ def set_output(name, value):
 
 def build(out, steps, published_url=None):
     client = Client(source="ecmwf", model="ifs", resol="0p25")
+    fine_client = Client(source="ecmwf", model="ifs", resol=FINE_RESOL)
     run = client.latest(type="fc", step=max(steps), param="2t")
+    # Both resolutions come from the same run; wait for the 0.1° files if they lag behind.
+    if fine_client.latest(type="fc", step=max(steps), param="2t") < run:
+        run = fine_client.latest(type="fc", step=max(steps), param="2t")
     run_id = f"{run:%Y%m%d%H}-v{FORMAT_VERSION}"
     print(f"ECMWF IFS run {run:%Y-%m-%d %H}Z, steps {steps}", flush=True)
     if published_url and published_run(published_url) == run_id:
@@ -326,20 +353,27 @@ def build(out, steps, published_url=None):
         return None
 
     grids = {}
+    fine = {}
     resolution = None
+    fine_resolution = None
     with tempfile.TemporaryDirectory() as work:
         surface = os.path.join(work, "surface.grib2")
         levels = os.path.join(work, "levels.grib2")
         profile = os.path.join(work, "profile.grib2")
-        retrieve(client, run, steps, surface, param=SURFACE_PARAMS)
+        retrieve(fine_client, run, steps, surface, param=SURFACE_PARAMS)
+        for name, _, step, values, fine_resolution in read_messages(surface):
+            fine[(name, step)] = values
+        os.remove(surface)
         retrieve(client, run, steps, levels, param=["u", "v", "t", "r"], levelist=LEVELS)
         retrieve(client, run, steps, profile, param=["t", "gh"], levelist=FREEZING_LEVELS)
-        for path in (surface, levels, profile):
+        for path in (levels, profile):
             for name, level, step, values, resolution in read_messages(path):
-                grids[(name, 0 if path == surface else level, step)] = values
+                grids[(name, level, step)] = values
 
     sample = next(iter(grids.values()))
     ny, nx = sample.shape
+    fine_sample = next(iter(fine.values()))
+    fine_grid = {"north": REGION["north"], "west": REGION["west"], "step": fine_resolution, "nx": fine_sample.shape[1], "ny": fine_sample.shape[0]}
     out_run = os.path.join(out, "runs", run_id)
     if os.path.exists(out):
         # Only ever replace a folder this script produced, never an arbitrary directory passed by mistake.
@@ -354,69 +388,80 @@ def build(out, steps, published_url=None):
             handle.write(encode(values, FIELDS[field]).tobytes())
 
     empty = np.full((ny, nx), np.nan)
+    fine_empty = np.full((fine_grid["ny"], fine_grid["nx"]), np.nan)
     grid = {"north": REGION["north"], "west": REGION["west"], "step": resolution, "nx": nx, "ny": ny}
     aqi = fetch_aqi(run, steps, grid)
+    up = lambda values: regrid(values, grid, fine_grid)  # noqa: E731 - 0.25° level data onto the 0.1° grid
+    down = lambda values: regrid(values, fine_grid, grid)  # noqa: E731 - smooth surface fields onto 0.25°
 
     def first_available(name):
         """Fields that cover the period before each step (gusts, radiation) have nothing at step 0."""
-        return next((grids[(name, 0, later)] for later in steps if (name, 0, later) in grids and later), empty)
+        return next((fine[(name, later)] for later in steps if (name, later) in fine and later), fine_empty)
+
+    def write_field(field, index, values):
+        """Writes a fine-grid value array on the grid its field is stored on."""
+        write(field, index, values if field in FINE_FIELDS else down(values))
+
+    # The model's ground height, from the surface and sea-level pressure at the first step.
+    write("orog", 0, ground_height(fine[("sp", steps[0])], fine[("msl", steps[0])], fine[("2t", steps[0])]))
 
     for index, step in enumerate(steps):
-        get = lambda name, level=0: grids.get((name, level, step), empty)  # noqa: E731
-        write("temp", index, get("2t") - 273.15)
+        get = lambda name: fine.get((name, step), fine_empty)  # noqa: E731 - surface fields, 0.1°
+        level_at = lambda name, level: grids.get((name, level, step), empty)  # noqa: E731 - levels, 0.25°
+        write_field("temp", index, get("2t") - 273.15)
         # Total precipitation is accumulated since the run started; the map shows the rate over the last step.
         previous = steps[index - 1] if index else None
         if previous is None:
-            rate = np.zeros((ny, nx))
+            rate = np.zeros(fine_empty.shape)
         else:
-            rate = (get("tp") - grids.get(("tp", 0, previous), empty)) * 1000 / (step - previous)
-        write("precip", index, np.clip(rate, 0, None))
+            rate = (get("tp") - fine.get(("tp", previous), fine_empty)) * 1000 / (step - previous)
+        write_field("precip", index, np.clip(rate, 0, None))
         # Gusts are a maximum over the preceding period, so the run's first step has none; use the next one.
         gust = get("10fg")
         if np.isnan(gust).all():
             gust = first_available("10fg")
-        write("gust", index, gust)
+        write_field("gust", index, gust)
         # Rain and snowfall totals since the run started (snow as fresh snow, about 1 cm per mm of water).
-        write("rainacc", index, np.clip(get("tp") * 1000, 0, None) if step else np.zeros((ny, nx)))
-        write("snowacc", index, np.clip(get("sf") * 1000, 0, None) if step else np.zeros((ny, nx)))
-        write("snowdepth", index, np.clip(snow_depth(get("sd"), get("rsn")), 0, None))
+        write_field("rainacc", index, np.clip(get("tp") * 1000, 0, None) if step else np.zeros(fine_empty.shape))
+        write_field("snowacc", index, np.clip(get("sf") * 1000, 0, None) if step else np.zeros(fine_empty.shape))
+        write_field("snowdepth", index, np.clip(snow_depth(get("sd"), get("rsn")), 0, None))
         # Downward solar radiation is accumulated too: the mean over the last step, in W/m².
         if previous is None:
             later = next((s for s in steps if s), None)
-            solar = first_available("ssrd") / (later * 3600) if later else empty
+            solar = first_available("ssrd") / (later * 3600) if later else fine_empty
         else:
-            solar = (get("ssrd") - grids.get(("ssrd", 0, previous), empty)) / ((step - previous) * 3600)
-        write("solar", index, np.clip(solar, 0, None))
-        write("dew", index, get("2d") - 273.15)
-        write("tcwv", index, get("tcwv"))
+            solar = (get("ssrd") - fine.get(("ssrd", previous), fine_empty)) / ((step - previous) * 3600)
+        write_field("solar", index, np.clip(solar, 0, None))
+        write_field("dew", index, get("2d") - 273.15)
+        write_field("tcwv", index, get("tcwv"))
         # ECMWF gives a type even for trace amounts; show it only where at least 0.1 mm/h is falling.
-        write("ptype", index, np.where(get("tprate") * 3600 >= 0.1, precip_category(get("ptype")), 0))
-        write("rh", index, relative_humidity(get("2t"), get("2d")))
-        write("cloud", index, get("tcc") * 100)
-        write("lowcloud", index, get("lcc") * 100)
-        write("midcloud", index, get("mcc") * 100)
-        write("highcloud", index, get("hcc") * 100)
-        write("pressure", index, get("msl") / 100)
-        write("cape", index, get("mucape"))
+        write_field("ptype", index, np.where(get("tprate") * 3600 >= 0.1, precip_category(get("ptype")), 0))
+        write_field("rh", index, relative_humidity(get("2t"), get("2d")))
+        write_field("cloud", index, get("tcc") * 100)
+        write_field("lowcloud", index, get("lcc") * 100)
+        write_field("midcloud", index, get("mcc") * 100)
+        write_field("highcloud", index, get("hcc") * 100)
+        write_field("pressure", index, get("msl") / 100)
+        write_field("cape", index, get("mucape"))
         # The rain over the step can hide a short downpour, so the instantaneous rate counts too.
         storm_rain = np.fmax(np.clip(rate, 0, None), np.nan_to_num(get("tprate") * 3600, nan=0.0))
-        freezing = freezing_level([get("t", level) for level in FREEZING_LEVELS], [get("gh", level) for level in FREEZING_LEVELS], get("2t"))
-        write("storm", index, storm_category(
+        freezing = freezing_level([up(level_at("t", level)) for level in FREEZING_LEVELS], [up(level_at("gh", level)) for level in FREEZING_LEVELS], get("2t"))
+        write_field("storm", index, storm_category(
             storm_rain, get("mucape"), freezing, ground_height(get("sp"), get("msl"), get("2t")),
-            get("t", 500) - 273.15, np.hypot(get("u", 500), get("v", 500)),
+            up(level_at("t", 500)) - 273.15, np.hypot(up(level_at("u", 500)), up(level_at("v", 500))),
         ))
-        write("u10", index, get("10u"))
-        write("v10", index, get("10v"))
+        write_field("u10", index, get("10u"))
+        write_field("v10", index, get("10v"))
         for level in LEVELS:
-            write(f"u{level}", index, get("u", level))
-            write(f"v{level}", index, get("v", level))
-            write(f"t{level}", index, get("t", level) - 273.15)
-            write(f"r{level}", index, np.clip(get("r", level), 0, 100))
-        write("freezing", index, freezing)
+            write(f"u{level}", index, level_at("u", level))
+            write(f"v{level}", index, level_at("v", level))
+            write(f"t{level}", index, level_at("t", level) - 273.15)
+            write(f"r{level}", index, np.clip(level_at("r", level), 0, 100))
+        write_field("freezing", index, freezing)
         if aqi is not None:
             write("aqi", index, aqi[step] if aqi[step] is not None else empty)
 
-    fields = {name: spec for name, spec in FIELDS.items() if name != "aqi"}
+    fields = {name: ({**spec, "grid": "fine"} if name in FINE_FIELDS else spec) for name, spec in FIELDS.items() if name != "aqi"}
     if aqi is not None:
         covered = [index for index, step in enumerate(steps) if aqi[step] is not None]
         if covered:
@@ -424,13 +469,15 @@ def build(out, steps, published_url=None):
 
     meta = {
         "source": "ECMWF IFS open data",
-        "model": "IFS 0.25°",
+        "model": "IFS 0.1° surface, 0.25° levels",
         "license": "CC-BY-4.0",
         "attribution": "Contains modified Copernicus/ECMWF open data. © ECMWF, CC-BY-4.0.",
         "run": run.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "runId": run_id,
         "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "grid": grid,
+        # Fields marked "grid": "fine" use this 0.1° grid; the rest use "grid".
+        "grids": {"fine": fine_grid},
         "times": [int((run.replace(tzinfo=dt.timezone.utc) + dt.timedelta(hours=step)).timestamp()) for step in steps],
         "missing": MISSING,
         # Without AQI (Open-Meteo down) the field is left out, so the map hides the layer. With it, lastStep is
