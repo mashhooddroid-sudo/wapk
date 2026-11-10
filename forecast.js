@@ -642,11 +642,9 @@
       if (lapse) {
         const valuePair = data[layerField(layer, level)];
         terrain.setSource({
-          sample: (lats, lons) => {
-            const plan = planFor(gridOfPair(valuePair, state.meta.grid), lats, lons);
-            const orogPlan = gridOfPair(data.orog, state.meta.grid) === gridOfPair(valuePair, state.meta.grid) ? plan : buildPlan(gridOfPair(data.orog, state.meta.grid), lats, lons);
-            return { value: applyPlan(plan, valuePair), ground: applyPlan(orogPlan, data.orog) };
-          },
+          value: (lats, lons) => applyPlan(planFor(gridOfPair(valuePair, state.meta.grid), lats, lons), valuePair),
+          ground: (lats, lons) => applyPlan(buildPlan(gridOfPair(data.orog, state.meta.grid), lats, lons), data.orog),
+          groundKey: state.meta.runId,
           lapse, layerKey: state.layer, theme: state.theme, opacity: layer.opacity || 0.6,
         });
         if (!map.hasLayer(terrain)) terrain.addTo(map);
@@ -1799,6 +1797,8 @@
   const TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
   const TERRAIN_MIN_ZOOM = 6;
   const TERRAIN_TILE_LIMIT = 120;
+  // Quiet time before the terrain picture is redrawn, so dragging the time slider or the map stays smooth.
+  const TERRAIN_SETTLE_MS = 220;
   const terrainTiles = new Map();
 
   // Heights (m) of one 256 × 256 tile, or null where it cannot load. Recent tiles are kept.
@@ -1876,15 +1876,17 @@
       onRemove(map) {
         map.off("moveend resize", this.redraw, this);
         map.off("zoomstart", this._hide, this);
+        clearTimeout(this._timer);
         this._drawId += 1;
         this._canvas.remove();
         this._canvas = null;
         onActive(false);
       },
 
-      // { sample(lats, lons) → { value, ground }, lapse, layerKey, theme, opacity }
+      // { value(lats, lons), ground(lats, lons), groundKey, lapse, layerKey, theme, opacity }
       setSource(source) {
         this._source = source;
+        this._sourceChanged = true;
       },
 
       _hide() {
@@ -1893,7 +1895,17 @@
         onActive(false);
       },
 
-      async redraw() {
+      // Redraws shortly after the last change (hour steps while dragging the slider, the end of a pan), so
+      // a quick series of changes costs one draw. A new hour hides the old picture at once (the plain 9 km
+      // colours show meanwhile); after a pan the old picture stays until the new one is ready.
+      redraw() {
+        clearTimeout(this._timer);
+        this._drawId += 1;
+        if (this._sourceChanged && this._canvas?.style.display !== "none") this._hide();
+        this._timer = setTimeout(() => this._draw(), TERRAIN_SETTLE_MS);
+      },
+
+      async _draw() {
         const map = this._map;
         const source = this._source;
         if (!map || !this._canvas || !source) return;
@@ -1904,40 +1916,51 @@
           return;
         }
         const size = map.getSize();
-        const stride = size.x < 760 ? 3 : 2;
-        const padX = Math.round(size.x * 0.3);
-        const padY = Math.round(size.y * 0.3);
+        const stride = size.x < 760 ? 4 : 3;
+        const padX = Math.round(size.x * 0.15);
+        const padY = Math.round(size.y * 0.15);
         const columns = Math.ceil((size.x + 2 * padX) / stride);
         const rows = Math.ceil((size.y + 2 * padY) / stride);
-        // Hour steps keep the view, so its sample positions, terrain and sampling plans are reused.
+        // The view's sample positions, terrain heights and corrections don't change with the hour, so they are
+        // worked out once per view and an hour step is only "model value + correction".
         const viewKey = `${map.getBounds().toBBoxString()}|${zoom}|${columns}x${rows}`;
-        if (this._view?.key !== viewKey) this._view = { key: viewKey };
+        if (this._view?.key !== viewKey) this._view = { key: viewKey, corrections: new Map() };
         const view = this._view;
-        // Web Mercator: longitude depends only on x and latitude only on y.
-        const colLon = (view.colLon ||= Float64Array.from({ length: columns }, (_, col) => map.containerPointToLatLng([col * stride - padX, 0]).lng));
-        const rowLat = (view.rowLat ||= Float64Array.from({ length: rows }, (_, row) => map.containerPointToLatLng([0, row * stride - padY]).lat));
-
-        // Terrain tiles with about one height per drawn pixel.
-        const tileZoom = Math.max(3, Math.min(12, Math.round(zoom) + (stride === 3 ? -1 : 0) - 1));
-        const xs = Array.from(colLon, (lon) => worldX(lon, tileZoom));
-        const ys = Array.from(rowLat, (lat) => worldY(lat, tileZoom));
-        const tileSpan = 2 ** tileZoom;
-        const x0 = Math.floor(xs[0] / 256);
-        const x1 = Math.floor(xs[columns - 1] / 256);
-        const y0 = Math.max(0, Math.floor(ys[0] / 256));
-        const y1 = Math.min(tileSpan - 1, Math.floor(ys[rows - 1] / 256));
-        const tiles = (view.tiles ||= new Map());
-        const jobs = [];
-        for (let ty = y0; ty <= y1; ty += 1) {
-          for (let tx = x0; tx <= x1; tx += 1) {
-            const wrapped = ((tx % tileSpan) + tileSpan) % tileSpan;
-            if (!tiles.has(`${tx}/${ty}`)) jobs.push(terrainTile(tileZoom, wrapped, ty).then((heights) => tiles.set(`${tx}/${ty}`, heights)));
+        if (!view.heights) {
+          // Web Mercator: longitude depends only on x and latitude only on y.
+          const colLon = Float64Array.from({ length: columns }, (_, col) => map.containerPointToLatLng([col * stride - padX, 0]).lng);
+          const rowLat = Float64Array.from({ length: rows }, (_, row) => map.containerPointToLatLng([0, row * stride - padY]).lat);
+          // Terrain tiles with about one height per drawn pixel.
+          const tileZoom = Math.max(3, Math.min(12, Math.round(zoom) - (stride >= 4 ? 2 : 1)));
+          const tileSpan = 2 ** tileZoom;
+          const colPx = Array.from(colLon, (lon) => Math.floor(worldX(lon, tileZoom)));
+          const rowPx = Array.from(rowLat, (lat) => Math.min(tileSpan * 256 - 1, Math.max(0, Math.floor(worldY(lat, tileZoom)))));
+          const x0 = Math.floor(colPx[0] / 256);
+          const y0 = Math.floor(rowPx[0] / 256);
+          const tilesWide = Math.floor(colPx[columns - 1] / 256) - x0 + 1;
+          const tilesHigh = Math.floor(rowPx[rows - 1] / 256) - y0 + 1;
+          const tiles = new Array(tilesWide * tilesHigh).fill(null);
+          await Promise.all(tiles.map((_, slot) => {
+            const tx = x0 + (slot % tilesWide);
+            const ty = y0 + Math.floor(slot / tilesWide);
+            return terrainTile(tileZoom, ((tx % tileSpan) + tileSpan) % tileSpan, ty).then((heights) => {
+              tiles[slot] = heights;
+            });
+          }));
+          if (drawId !== this._drawId || !this._canvas || this._view !== view) return;
+          // Height under every drawn pixel, read through per-column and per-row lookups.
+          const colSlot = Int32Array.from(colPx, (px) => Math.floor(px / 256) - x0);
+          const colIn = Int32Array.from(colPx, (px) => px % 256);
+          const heights = new Float32Array(columns * rows).fill(NaN);
+          for (let row = 0; row < rows; row += 1) {
+            const slotRow = (Math.floor(rowPx[row] / 256) - y0) * tilesWide;
+            const inRow = (rowPx[row] % 256) * 256;
+            for (let col = 0; col < columns; col += 1) {
+              const tile = tiles[slotRow + colSlot[col]];
+              if (tile) heights[row * columns + col] = tile[inRow + colIn[col]];
+            }
           }
-        }
-        await Promise.all(jobs);
-        if (drawId !== this._drawId || !this._canvas) return;
-
-        if (!view.lats) {
+          view.heights = heights;
           view.lats = new Float64Array(columns * rows);
           view.lons = new Float64Array(columns * rows);
           for (let row = 0; row < rows; row += 1) {
@@ -1945,31 +1968,33 @@
             view.lons.set(colLon, row * columns);
           }
         }
-        const { value, ground } = source.sample(view.lats, view.lons);
+        // °C to add to each pixel for this layer: lapse × (model ground − real ground). Sea keeps the model value.
+        const correctionKey = `${source.lapse}|${source.groundKey}`;
+        if (!view.corrections.has(correctionKey)) {
+          const ground = source.ground(view.lats, view.lons);
+          const correction = new Float32Array(columns * rows);
+          for (let index = 0; index < correction.length; index += 1) {
+            const height = view.heights[index];
+            if (height > 0 && !Number.isNaN(ground[index])) correction[index] = (source.lapse * (ground[index] - height)) / 1000;
+          }
+          view.corrections.set(correctionKey, correction);
+        }
+        const correction = view.corrections.get(correctionKey);
+        const value = source.value(view.lats, view.lons);
         const colours = colorTable(source.layerKey, source.theme);
+        const scale = (colours.size - 1) / colours.span;
         const image = new ImageData(columns, rows);
         const pixels = image.data;
-        for (let row = 0; row < rows; row += 1) {
-          const py = Math.floor(ys[row]);
-          const ty = Math.floor(py / 256);
-          for (let col = 0; col < columns; col += 1) {
-            const index = row * columns + col;
-            let v = value[index];
-            if (Number.isNaN(v)) continue;
-            const px = Math.floor(xs[col]);
-            const heights = tiles.get(`${Math.floor(px / 256)}/${ty}`);
-            // Sea and missing terrain keep the model value.
-            if (heights) {
-              const height = heights[(py - ty * 256) * 256 + (px - Math.floor(px / 256) * 256)];
-              if (height > 0 && !Number.isNaN(ground[index])) v += (source.lapse * (ground[index] - height)) / 1000;
-            }
-            const entry = Math.min(colours.size - 1, Math.max(0, Math.round(((v - colours.first) / colours.span) * (colours.size - 1)))) * 4;
-            const out = index * 4;
-            pixels[out] = colours.table[entry];
-            pixels[out + 1] = colours.table[entry + 1];
-            pixels[out + 2] = colours.table[entry + 2];
-            pixels[out + 3] = colours.table[entry + 3];
-          }
+        const table = colours.table;
+        for (let index = 0; index < value.length; index += 1) {
+          const v = value[index] + correction[index];
+          if (Number.isNaN(v)) continue;
+          const entry = Math.min(colours.size - 1, Math.max(0, Math.round((v - colours.first) * scale))) * 4;
+          const out = index * 4;
+          pixels[out] = table[entry];
+          pixels[out + 1] = table[entry + 1];
+          pixels[out + 2] = table[entry + 2];
+          pixels[out + 3] = table[entry + 3];
         }
         const canvas = this._canvas;
         canvas.width = columns;
@@ -1980,6 +2005,7 @@
         canvas.style.opacity = String(source.opacity);
         L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([-padX, -padY]));
         canvas.style.display = "";
+        this._sourceChanged = false;
         onActive(true);
       },
     });
