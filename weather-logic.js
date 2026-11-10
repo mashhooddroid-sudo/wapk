@@ -244,6 +244,10 @@
       const stormDay = anyStormHour || (upstreamStorm && maxProb > 25 && precipSum >= 1);
       code = dailyPrecipTier(precipSum, stormDay);
     }
+    // Snow, sleet or freezing rain for 3 hours or more is the day's headline over plain rain (not over a storm),
+    // so a day that starts with sleet and turns to rain still shows it.
+    const wintry = all.filter((value) => [56, 57, 66, 67, 68, 69, 71, 73, 75, 77, 85, 86].includes(value));
+    if (wintry.length >= 3 && !isStormCode(code)) code = dominantCode(wintry);
     return {
       code,
       dayCode: dayCodes.length ? headline(dayCodes, dayCloud) : null,
