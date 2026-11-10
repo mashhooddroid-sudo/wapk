@@ -4,7 +4,8 @@
   // Windy-style forecast map for the Maps view. The data comes from ECMWF IFS open data, which the
   // pipeline publishes as one byte-packed file per field and 3-hourly step (see pipeline/build_forecast.py).
   // The timeline moves hour by hour by blending the two neighbouring steps.
-  const API_TIMEZONE = "Asia/Karachi";
+  // Times on the map are shown in the viewer's own time zone (Pakistan time for most, IST in India, …).
+  const VIEW_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Karachi";
   const REFRESH_MS = 30 * 60 * 1000;
   const PLAY_STEP_MS = 450;
   // About 2.5 pixels per 0.25° cell across the region; the browser smooths it when zoomed in.
@@ -771,8 +772,8 @@
       const percent = (hour) => `${(hour / lastHour) * 100}%`;
       // A week of "28 Wed" labels does not fit a phone-width bar, so narrow bars show just the weekday.
       const narrow = els.ticks.clientWidth > 0 && els.ticks.clientWidth / (lastHour / 24) < 64;
-      const dayFormat = new Intl.DateTimeFormat(undefined, narrow ? { weekday: "short", timeZone: API_TIMEZONE } : { weekday: "short", day: "numeric", timeZone: API_TIMEZONE });
-      const hourFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: API_TIMEZONE });
+      const dayFormat = new Intl.DateTimeFormat(undefined, narrow ? { weekday: "short", timeZone: VIEW_TIMEZONE } : { weekday: "short", day: "numeric", timeZone: VIEW_TIMEZONE });
+      const hourFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: VIEW_TIMEZONE });
       for (let hour = 0; hour <= lastHour; hour += 1) {
         const time = new Date((meta.times[0] + hour * 3600) * 1000);
         const isMidnight = hourFormat.format(time) === "00";
@@ -795,9 +796,11 @@
 
     function renderTime() {
       const ms = currentTime() * 1000;
-      const offset = Math.round((ms - Date.now()) / 3_600_000);
-      const relative = offset === 0 ? "now" : offset > 0 ? `+${offset} h` : `${offset} h`;
-      els.time.textContent = `${new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: API_TIMEZONE }).format(new Date(ms))} · ${relative}`;
+      // The clock time in the viewer's time zone; the hour that contains now is marked "now".
+      const isNow = Math.round((ms - Date.now()) / 3_600_000) === 0;
+      // Zones half an hour off (India, IST) show the minutes, e.g. 12:30 PM.
+      const minutes = Number(new Intl.DateTimeFormat("en-GB", { minute: "numeric", timeZone: VIEW_TIMEZONE }).format(new Date(ms))) ? { minute: "2-digit" } : {};
+      els.time.textContent = `${new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", ...minutes, timeZone: VIEW_TIMEZONE }).format(new Date(ms))}${isNow ? " · now" : ""}`;
       // Centre the bubble over the handle, but keep it inside the bar at either end.
       const fraction = state.hour / (state.lastHour ?? state.meta.lastHour);
       els.time.style.left = `${fraction * 100}%`;
@@ -1181,8 +1184,8 @@
 
   function formatTime(ms, timeOnly) {
     const options = timeOnly
-      ? { hour: "numeric", minute: "2-digit", timeZone: API_TIMEZONE, timeZoneName: "short" }
-      : { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: API_TIMEZONE, timeZoneName: "short" };
+      ? { hour: "numeric", minute: "2-digit", timeZone: VIEW_TIMEZONE, timeZoneName: "short" }
+      : { weekday: "short", day: "numeric", month: "short", hour: "numeric", timeZone: VIEW_TIMEZONE, timeZoneName: "short" };
     return new Intl.DateTimeFormat(undefined, options).format(new Date(ms));
   }
 

@@ -5,6 +5,8 @@
   const DIRECT_STRIKES_ENDPOINT = "https://lightningbackend-production.up.railway.app/strikes";
   const API_TIMEZONE = "Asia/Karachi";
   const API_TIMEZONE_OFFSET = "+05:00";
+  // Times shown on the map use the viewer's own time zone; API_TIMEZONE_OFFSET still reads the feed's timestamps.
+  const VIEW_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || API_TIMEZONE;
   const DEFAULT_CENTER = [30.4, 69.3];
   const DEFAULT_ZOOM = 5;
   const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -799,7 +801,7 @@
 
   function formatRadarDateTime(timestampMs) {
     // Include the day once the time is no longer from today's last few hours.
-    const options = { hour: "2-digit", minute: "2-digit", timeZone: API_TIMEZONE };
+    const options = { hour: "2-digit", minute: "2-digit", timeZone: VIEW_TIMEZONE };
     if (Date.now() - timestampMs > 12 * 60 * 60 * 1000) Object.assign(options, { day: "numeric", month: "short" });
     return new Intl.DateTimeFormat(undefined, options).format(new Date(timestampMs));
   }
@@ -808,7 +810,7 @@
     return new Intl.DateTimeFormat(undefined, {
       hour: "2-digit",
       minute: "2-digit",
-      timeZone: API_TIMEZONE,
+      timeZone: VIEW_TIMEZONE,
       timeZoneName: "short",
     }).format(new Date(timestampMs));
   }
@@ -1394,7 +1396,7 @@
     els.satellitePlay.disabled = frames.length < 2;
     const ms = Date.parse(time);
     els.satelliteTime.textContent = Number.isFinite(ms)
-      ? `${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: API_TIMEZONE }).format(new Date(ms))} · ${formatAge(ms)}`
+      ? `${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: VIEW_TIMEZONE }).format(new Date(ms))} · ${formatAge(ms)}`
       : "Loading…";
     els.satelliteSlider.setAttribute("aria-valuetext", els.satelliteTime.textContent);
     return { ...product, time, url };
@@ -2795,7 +2797,7 @@
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      timeZone: API_TIMEZONE,
+      timeZone: VIEW_TIMEZONE,
       timeZoneName: "short",
     }).format(new Date(timestampMs));
   }
@@ -2819,7 +2821,7 @@
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      timeZone: API_TIMEZONE,
+      timeZone: VIEW_TIMEZONE,
     }).format(date);
   }
 
@@ -2834,7 +2836,7 @@
     const formatter = new Intl.DateTimeFormat(undefined, {
       hour: "2-digit",
       minute: "2-digit",
-      timeZone: API_TIMEZONE,
+      timeZone: VIEW_TIMEZONE,
     });
     return `${formatter.format(start)} - ${formatter.format(end)}`;
   }
