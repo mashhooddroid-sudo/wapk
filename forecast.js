@@ -58,7 +58,7 @@
     rainthunder: {
       label: "Rain, thunder", type: "Rain, thunder", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4, pattern: true,
       extraFields: ["ptype", "storm"],
-      note: "Rain, thunder shows the rain or snow rate. Small lightning bolts mark expected thunderstorms, snowflakes mark snow.",
+      note: "Rain, thunder shows the rain or snow rate. Small lightning bolts mark expected thunderstorms, icy dots possible hail, snowflakes snow.",
       stops: [[0.1, "#7fb9f0"], [0.5, "#4f9ae8"], [1, "#2f7fdc"], [2, "#2aa76a"], [5, "#d9cf3a"], [10, "#f0882d"], [20, "#e5322d"], [50, "#b3189b"]],
     },
     freezing: {
@@ -1589,7 +1589,8 @@
 
   // ── Rain, thunder symbols ───────────────────────────────────────────────────
   // A dense, staggered screen grid of tiny symbols over the rain colours, as on Windy: a yellow lightning bolt
-  // where a storm category is expected, a white snowflake where it snows (fainter for a rain–snow mix), and
+  // where a storm category is expected, an icy hailstone where storms may bring hail, a white snowflake where it
+  // snows (fainter for a rain–snow mix), and
   // nothing for plain rain. Only where at least 0.1 mm/h falls, so symbols never sit on dry ground.
   const PATTERN_SPACING = 15;
   let PrecipPatternClass = null;
@@ -1662,11 +1663,14 @@
         const { rate, ptype, storm } = this._sample(lats, lons);
 
         const bolts = [];
+        const hail = [];
         const snow = [];
         const mix = [];
         points.forEach((point, index) => {
           if (!(rate[index] >= 0.1)) return;
-          if (storm && storm[index] >= 1) bolts.push(point);
+          // Storm category 5 is "with hail" (see the Storms layer); it gets hailstones instead of bolts.
+          if (storm && Math.round(storm[index]) >= 5) hail.push(point);
+          else if (storm && storm[index] >= 1) bolts.push(point);
           else if (ptype && Math.round(ptype[index]) === 3) snow.push(point);
           else if (ptype && Math.round(ptype[index]) === 2) mix.push(point);
         });
@@ -1705,6 +1709,20 @@
           context.fillStyle = "#f2f24a";
           context.strokeStyle = "rgba(20, 30, 10, 0.55)";
           context.lineWidth = 0.6;
+          context.fill();
+          context.stroke();
+        }
+
+        // Hail: a small icy stone with a dark rim, so it reads on any rain colour.
+        if (hail.length) {
+          context.beginPath();
+          for (const [x, y] of hail) {
+            context.moveTo(x + 3.2, y);
+            context.arc(x, y, 3.2, 0, Math.PI * 2);
+          }
+          context.fillStyle = "#e6f7ff";
+          context.strokeStyle = "rgba(10, 30, 60, 0.75)";
+          context.lineWidth = 1;
           context.fill();
           context.stroke();
         }
