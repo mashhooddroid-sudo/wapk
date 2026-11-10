@@ -23,6 +23,7 @@
   function rank(code) {
     if (code >= 95) return 100 + code;
     if ([56, 57, 66, 67].includes(code)) return 90;
+    if (code === 68 || code === 69) return 85 + (code % 10);
     if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 80 + (code % 10);
     if ((code >= 61 && code <= 65) || (code >= 80 && code <= 82)) return 70 + (code % 10);
     if (code >= 51 && code <= 55) return 60 + (code % 10);

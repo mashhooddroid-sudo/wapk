@@ -137,9 +137,12 @@
       kind = "rain";
       artwork = cloud(value === 61 ? "light" : "grey") + rain({ 61: 2, 63: 3, 65: 5 }[value]);
     } else if (value === 66 || value === 67) {
-      // The app also uses these for snow falling at 2–4 °C, so they read as sleet.
+      kind = "freezing-rain";
+      artwork = cloud("grey") + rain(value === 66 ? 2 : 3) + ice;
+    } else if (value === 68 || value === 69) {
+      // Sleet: rain and snow together (0–3 °C).
       kind = "sleet";
-      artwork = cloud("grey") + sleet + (value === 67 ? ice : "");
+      artwork = cloud(value === 68 ? "light" : "grey") + sleet;
     } else if ([80, 81, 82].includes(value)) {
       kind = "showers";
       artwork = peek(daylight) + cloud(value === 82 ? "grey" : "light") + rain({ 80: 2, 81: 3, 82: 5 }[value]);

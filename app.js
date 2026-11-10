@@ -13,7 +13,7 @@
     0: 'Clear skies', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Overcast',
     44: 'Mist', 45: 'Fog', 46: 'Dense fog', 47: 'Very dense fog', 48: 'Freezing fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
     56: 'Freezing drizzle', 57: 'Heavy freezing drizzle', 61: 'Light rain', 63: 'Rain',
-    65: 'Heavy rain', 66: 'Freezing rain', 67: 'Heavy freezing rain', 71: 'Light snow',
+    65: 'Heavy rain', 66: 'Freezing rain', 67: 'Heavy freezing rain', 68: 'Sleet', 69: 'Heavy sleet', 71: 'Light snow',
     73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains', 80: 'Light showers',
     81: 'Rain showers', 82: 'Heavy showers', 85: 'Snow showers', 86: 'Heavy snow showers',
     // Storm tiers by rain amount (see weather-logic.js); hail is a separate flag. 97 is internal.
@@ -666,6 +666,8 @@
       return code[0] === '+' ? heavy : code[0] === '-' ? light : moderate;
     };
     if (has(/TS/)) return has(/GR|GS/) ? 96 : 95;
+    // Rain and snow together (RASN, SNRA, DZSN) is sleet.
+    if (has(/RASN|SNRA|DZSN|SNDZ/)) return strength(/RASN|SNRA|DZSN|SNDZ/, 68, 69, 69);
     if (has(/SN|SG|PL|IC/)) return has(/SH(SN|PL)/) ? 85 : strength(/SN|SG|PL|IC/, 71, 73, 75);
     if (has(/FZ(RA|DZ)/)) return 66;
     if (has(/SH/)) return strength(/SH/, 80, 81, 82);

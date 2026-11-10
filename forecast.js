@@ -83,7 +83,7 @@
       label: "Precipitation type", type: "Precipitation type", field: "ptype",
       note: "Precipitation type shows what is falling where the model has precipitation at that moment.",
       categories: [[1, "Rain", "#3b8bff"], [2, "Rain and snow", "#a57cf0"], [3, "Snow", "#e9f2ff"], [4, "Freezing rain or ice", "#ff5fa2"]],
-      symbols: { 1: [63], 2: [66], 3: [73], 4: [67] },
+      symbols: { 1: [63], 2: [68], 3: [73], 4: [67] },
     }),
     snowacc: {
       label: "New snow", type: "New snow", unit: "cm since the run started", field: "snowacc", transparentBelow: 0.5,

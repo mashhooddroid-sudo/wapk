@@ -17,25 +17,29 @@
 
   const isStormCode = (code) => code === 95 || code === 96 || code === 97 || code === 99;
   // Drizzle, rain and showers: the codes the "meaningful rain" gate acts on.
-  const isRainCode = (code) => (code >= 51 && code <= 67) || (code >= 80 && code <= 82);
-  const isPriority = (code) => (code >= 44 && code <= 48) || (code >= 51 && code <= 67) || (code >= 71 && code <= 77) || (code >= 80 && code <= 86) || (code >= 95 && code <= 99);
+  // 68/69 are sleet (WMO "rain and snow"); 66/67 stay real freezing rain.
+  const isRainCode = (code) => (code >= 51 && code <= 69) || (code >= 80 && code <= 82);
+  const isPriority = (code) => (code >= 44 && code <= 48) || (code >= 51 && code <= 69) || (code >= 71 && code <= 77) || (code >= 80 && code <= 86) || (code >= 95 && code <= 99);
 
-  // Snow is valid below 2 °C, 2–4 °C is sleet, above 4 °C it is rain; rain at or below 0 °C is snow.
+  // What falls by the 2 m temperature, the same rule as the map's Rain, thunder layer: at or below 0 °C snow
+  // (freezing rain stays freezing rain), up to 1.5 °C snow (rain turns to sleet), 1.5–3 °C sleet or wet snow,
+  // above 3 °C rain (snow stays sleet up to 4 °C). Sleet is 68 (light) or 69 (moderate or heavy).
+  const SNOW_CODES = [71, 73, 75, 77, 85, 86];
+  const LIQUID_CODES = [51, 53, 55, 61, 63, 65, 80, 81, 82];
+  const sleetFor = (code) => ([55, 63, 65, 73, 75, 81, 82, 86].includes(code) ? 69 : 68);
   function fixPrecipTypeForTemp(code, tempC) {
     if (tempC === null) return code;
-    if ([71, 73, 75, 77, 85, 86].includes(code)) {
-      if (tempC < 2) return code;
-      if (tempC <= 4) return code === 75 || code === 86 ? 67 : 66;
+    if ([56, 57, 66, 67].includes(code)) return tempC > 3 ? { 56: 51, 57: 55, 66: 61, 67: 65 }[code] : code;
+    if (SNOW_CODES.includes(code)) {
+      if (tempC <= 1.5) return code;
+      if (tempC <= 4) return sleetFor(code);
       return { 71: 61, 77: 61, 73: 63, 75: 65, 85: 80, 86: 82 }[code];
     }
-    if (tempC <= 0) {
-      const snow = { 51: 71, 53: 73, 55: 75, 61: 71, 63: 73, 65: 75, 80: 85, 81: 85, 82: 86 }[code];
-      if (snow) return snow;
+    if (LIQUID_CODES.includes(code)) {
+      if (tempC <= 0) return { 51: 71, 53: 73, 55: 75, 61: 71, 63: 73, 65: 75, 80: 85, 81: 85, 82: 86 }[code];
+      if (tempC <= 3) return sleetFor(code);
     }
-    if (tempC > 2) {
-      const warm = { 48: 45, 56: 51, 57: 55, 66: 61, 67: 65 }[code];
-      if (warm) return warm;
-    }
+    if (code === 48 && tempC > 2) return 45;
     return code;
   }
 
@@ -116,7 +120,7 @@
     return 'severe';
   }
 
-  const SEVERITY = { 99: 100, 97: 98, 96: 96, 95: 94, 75: 90, 77: 88, 86: 85, 67: 82, 65: 80, 82: 78, 73: 70, 85: 68, 66: 65, 63: 62, 81: 60, 71: 55, 61: 50, 80: 48, 47: 52, 46: 49, 48: 45, 45: 42, 44: 25, 57: 38, 56: 36, 55: 34, 53: 32, 51: 30, 3: 20, 2: 15, 1: 10 };
+  const SEVERITY = { 99: 100, 97: 98, 96: 96, 95: 94, 75: 90, 77: 88, 86: 85, 67: 82, 69: 81, 65: 80, 82: 78, 73: 70, 85: 68, 68: 66, 66: 65, 63: 62, 81: 60, 71: 55, 61: 50, 80: 48, 47: 52, 46: 49, 48: 45, 45: 42, 44: 25, 57: 38, 56: 36, 55: 34, 53: 32, 51: 30, 3: 20, 2: 15, 1: 10 };
   function mostSevere(codes) {
     return codes.reduce((best, code) => ((SEVERITY[code] ?? 0) > (SEVERITY[best] ?? 0) ? code : best), codes[0]);
   }
