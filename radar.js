@@ -449,6 +449,7 @@
     // Searching a place moves the map and picker there and opens its forecast.
     window.WapkPointForecast?.attachSearch(els.mapSearchForm, els.mapSearchInput, els.mapSearchResults, (lat, lon, label) => {
       state.map.flyTo([lat, lon], Math.max(state.map.getZoom(), 7), { duration: 0.7 });
+      if (state.globe?.isVisible()) state.globe.flyTo(lat, lon, 5);
       state.forecast?.setPicker(lat, lon);
       state.pointForecast?.open(lat, lon, label);
     });
@@ -463,6 +464,7 @@
         ({ coords }) => {
           els.mapLocateButton.classList.remove("is-busy");
           state.map.flyTo([coords.latitude, coords.longitude], Math.max(state.map.getZoom(), 9), { duration: 0.7 });
+          if (state.globe?.isVisible()) state.globe.flyTo(coords.latitude, coords.longitude, 6);
           state.forecast?.setPicker(coords.latitude, coords.longitude);
           state.pointForecast?.open(coords.latitude, coords.longitude, "Current location");
         },

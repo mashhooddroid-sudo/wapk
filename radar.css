@@ -56,6 +56,7 @@
 .map-search input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--ink); font: 500 13px 'DM Sans', sans-serif; outline: none; }
 .map-search input::-webkit-search-cancel-button { filter: grayscale(1); }
 .map-search:focus-within { border-color: var(--accent); }
+.globe-pick { width: 14px; height: 14px; box-sizing: border-box; border: 3px solid #fff; border-radius: 50%; background: #2f7fdc; box-shadow: 0 0 0 2px #0006, 0 2px 8px #000a; pointer-events: none; }
 .map-locate { display: grid; place-items: center; flex: none; width: 28px; height: 28px; margin-right: -4px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer; }
 .map-locate:hover { background: var(--hover); }
 .map-locate svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }

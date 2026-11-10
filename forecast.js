@@ -60,7 +60,7 @@
     // Windy's "Rain, thunder": the rain (or snow) rate in colour, with a dense pattern of small lightning bolts
     // where storms are expected and snowflakes where it snows; plain rain has colour only.
     rainthunder: {
-      label: "Rain, thunder", type: "Rain, thunder", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4, pattern: true,
+      label: "Rain, thunder", type: "Rain, thunder", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.25, pattern: true, opacity: 0.85,
       extraFields: ["ptype", "storm", "temp", "orog"],
       note: "Rain, thunder shows the rain or snow rate. Bolts mark expected thunderstorms (with ice pellets where hail is possible); snowflakes snow; a snowflake with a raindrop sleet or wet snow (about 0–3 °C); a pink drop freezing rain.",
       stops: [[0.1, "#7fb9f0"], [0.5, "#4f9ae8"], [1, "#2f7fdc"], [2, "#2aa76a"], [5, "#d9cf3a"], [10, "#f0882d"], [20, "#e5322d"], [50, "#b3189b"]],
@@ -70,7 +70,7 @@
       stops: [[0, "#e7f2ff"], [500, "#b9a6f2"], [1500, "#7b5fd6"], [2500, "#3d7bd9"], [3500, "#2fb3a8"], [4500, "#9ad15a"], [5500, "#f2c931"], [6500, "#f07a2d"]],
     },
     rain: {
-      label: "Rain", type: "Rain rate", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4,
+      label: "Rain", type: "Rain rate", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.25, opacity: 0.85,
       stops: [[0.1, "#a6e1ff"], [0.5, "#4fb3ff"], [1, "#2f7fff"], [2, "#22c35e"], [5, "#f5d63d"], [10, "#f58b2d"], [20, "#e5322d"], [50, "#b3189b"]],
     },
     rainacc: {
@@ -720,6 +720,11 @@
         windColor: (layer && !layer.isCloud) || state.theme === "dark" ? "rgba(255,255,255,0.85)" : "rgba(16,40,72,0.8)",
         speedScale: WIND_LEVELS[level].speed,
         particleStyle,
+        // Rain, thunder's symbols, worked out for the globe's own screen points (zoom is Leaflet's).
+        symbols: layer?.pattern && precipPattern._sample ? {
+          groups: (points, lats, lons, zoom) => precipGroups(precipPattern._sample, points, lats, lons, zoom),
+          draw: (context, groups) => precipPattern._drawSymbols(context, groups),
+        } : null,
       });
 
       renderLegend();
@@ -1753,6 +1758,38 @@
   }
   let PrecipPatternClass = null;
 
+  // Which symbol goes at each screen point (bolts, hail pellets, snow, sleet, freezing rain), for the flat
+  // map's pattern layer and the 3D globe. `sample(lats, lons)` gives { rate, ptype, storm, temp, ground }.
+  async function precipGroups(sample, points, lats, lons, zoom) {
+    const sampled = sample(lats, lons);
+    // Zoomed in, the temperature is judged at the real terrain height (terrain tiles load asynchronously).
+    // The real terrain is used at every zoom (coarser tiles when zoomed out), so zooming never changes a symbol.
+    const heights = sampled.temp && sampled.ground ? await pointHeights(lats, lons, zoom) : null;
+
+    const { rate, ptype, storm, temp, ground } = sampled;
+    // Precipitation type at each point from ECMWF's type and the 2 m temperature (see precipKind).
+    const kinds = points.map((_, index) => {
+      let celsius = temp ? temp[index] : NaN;
+      if (heights && heights[index] > 0 && !Number.isNaN(ground[index])) celsius += (6.5 * (ground[index] - heights[index])) / 1000;
+      return precipKind(ptype ? Math.round(ptype[index]) : 1, celsius);
+    });
+    const bolts = [];
+    const hail = [];
+    const snow = [];
+    const mix = [];
+    const freezing = [];
+    points.forEach((point, index) => {
+      if (!(rate[index] >= 0.1)) return;
+      // Storm category 5 is "with hail" (see the Storms layer): its bolts get small ice pellets beside them.
+      if (storm && storm[index] >= 1) bolts.push(point);
+      if (storm && Math.round(storm[index]) >= 5) hail.push(point);
+      else if (kinds[index] === "snow") snow.push(point);
+      else if (kinds[index] === "mix") mix.push(point);
+      else if (kinds[index] === "freezing") freezing.push(point);
+    });
+    return { bolts, hail, snow, mix, freezing };
+  }
+
   function createPrecipPatternLayer(options) {
     PrecipPatternClass ||= L.Layer.extend({
       initialize(layerOptions) {
@@ -1792,10 +1829,7 @@
         const size = map.getSize();
         const ratio = Math.min(window.devicePixelRatio || 1, 2);
         const { points, lats, lons } = this._points(map, size);
-        const sampled = this._sample(lats, lons);
-        // Zoomed in, the temperature is judged at the real terrain height (terrain tiles load asynchronously).
-        // The real terrain is used at every zoom (coarser tiles when zoomed out), so zooming never changes a symbol.
-        const heights = sampled.temp && sampled.ground ? await pointHeights(lats, lons, map.getZoom()) : null;
+        const groups = await precipGroups(this._sample, points, lats, lons, map.getZoom());
         if (drawId !== this._drawId || !this._canvas) return;
         this._canvas.width = Math.round(size.x * ratio);
         this._canvas.height = Math.round(size.y * ratio);
@@ -1804,29 +1838,7 @@
         L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0, 0]));
         const context = this._canvas.getContext("2d");
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
-
-        const { rate, ptype, storm, temp, ground } = sampled;
-        // Precipitation type at each point from ECMWF's type and the 2 m temperature (see precipKind).
-        const kinds = points.map((_, index) => {
-          let celsius = temp ? temp[index] : NaN;
-          if (heights && heights[index] > 0 && !Number.isNaN(ground[index])) celsius += (6.5 * (ground[index] - heights[index])) / 1000;
-          return precipKind(ptype ? Math.round(ptype[index]) : 1, celsius);
-        });
-        const bolts = [];
-        const hail = [];
-        const snow = [];
-        const mix = [];
-        const freezing = [];
-        points.forEach((point, index) => {
-          if (!(rate[index] >= 0.1)) return;
-          // Storm category 5 is "with hail" (see the Storms layer): its bolts get small ice pellets beside them.
-          if (storm && storm[index] >= 1) bolts.push(point);
-          if (storm && Math.round(storm[index]) >= 5) hail.push(point);
-          else if (kinds[index] === "snow") snow.push(point);
-          else if (kinds[index] === "mix") mix.push(point);
-          else if (kinds[index] === "freezing") freezing.push(point);
-        });
-        this._drawSymbols(context, { bolts, hail, snow, mix, freezing });
+        this._drawSymbols(context, groups);
       },
 
       // A dense, staggered grid of points fixed to the map (not the screen), so the pattern does not shimmer.

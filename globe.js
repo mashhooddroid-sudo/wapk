@@ -38,9 +38,12 @@
     const container = document.createElement("div");
     container.className = "globe-map";
     container.hidden = true;
+    // Rain, thunder's symbols, then the wind particles, over the globe.
+    const symbolCanvas = document.createElement("canvas");
+    symbolCanvas.className = "globe-particles";
     const windCanvas = document.createElement("canvas");
     windCanvas.className = "globe-particles";
-    container.append(windCanvas);
+    container.append(symbolCanvas, windCanvas);
     stage.append(container);
 
     async function show(view) {
@@ -61,6 +64,7 @@
       state.visible = false;
       container.hidden = true;
       stopParticles();
+      clearSymbols();
       const map = state.map;
       if (!map) return null;
       const center = map.getCenter();
@@ -95,10 +99,22 @@
       });
       map.addControl(new window.maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
       // The picker and point forecast follow taps on the globe, as on the flat map.
-      map.on("click", (event) => options.onPick?.(event.lngLat.lat, event.lngLat.lng));
-      map.on("movestart", stopParticles);
-      map.on("moveend", resetParticles);
-      map.on("resize", resetParticles);
+      map.on("click", (event) => {
+        setPick(event.lngLat.lat, event.lngLat.lng);
+        options.onPick?.(event.lngLat.lat, event.lngLat.lng);
+      });
+      map.on("movestart", () => {
+        stopParticles();
+        clearSymbols();
+      });
+      map.on("moveend", () => {
+        resetParticles();
+        drawSymbols();
+      });
+      map.on("resize", () => {
+        resetParticles();
+        drawSymbols();
+      });
       map.on("load", () => {
         state.ready = true;
         applyDraw();
@@ -141,6 +157,71 @@
         map.removeSource("forecast");
       }
       resetParticles();
+      drawSymbols();
+    }
+
+    // ── Rain, thunder symbols ──────────────────────────────────────────────
+    // The same bolts, hail pellets, snowflakes and sleet marks as the flat map, on a staggered grid of screen
+    // points over the visible globe (forecast.js decides which symbol goes where). Redrawn after each move.
+    const SYMBOL_SPACING = 15;
+    let symbolId = 0;
+    function clearSymbols() {
+      symbolId += 1;
+      symbolCanvas.getContext("2d").clearRect(0, 0, symbolCanvas.width, symbolCanvas.height);
+    }
+
+    async function drawSymbols() {
+      clearSymbols();
+      const map = state.map;
+      const symbols = state.draw?.symbols;
+      if (!map || !state.visible || !symbols) return;
+      const id = symbolId;
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      const points = [];
+      const lats = [];
+      const lons = [];
+      for (let row = 0, y = 0; y <= height; row += 1, y += SYMBOL_SPACING) {
+        for (let x = row % 2 ? SYMBOL_SPACING / 2 : 0; x <= width; x += SYMBOL_SPACING) {
+          const point = map.unproject([x, y]);
+          // Points off the edge of the globe do not come back to where they started.
+          const back = map.project(point);
+          if (Math.abs(back.x - x) > 1.5 || Math.abs(back.y - y) > 1.5) continue;
+          points.push([x, y]);
+          lats.push(point.lat);
+          lons.push(point.lng);
+        }
+      }
+      const groups = await symbols.groups(points, Float64Array.from(lats), Float64Array.from(lons), map.getZoom() + 1);
+      if (id !== symbolId) return;
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      symbolCanvas.width = Math.round(width * ratio);
+      symbolCanvas.height = Math.round(height * ratio);
+      symbolCanvas.style.width = `${width}px`;
+      symbolCanvas.style.height = `${height}px`;
+      const context = symbolCanvas.getContext("2d");
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      symbols.draw(context, groups);
+    }
+
+    // The picker's place on the globe (a white dot) and flying there, e.g. for "my location".
+    let pickMarker = null;
+    function setPick(lat, lon) {
+      const map = state.map;
+      if (!map) return;
+      if (!pickMarker) {
+        const dot = document.createElement("div");
+        dot.className = "globe-pick";
+        pickMarker = new window.maplibregl.Marker({ element: dot });
+      }
+      pickMarker.setLngLat([lon, lat]).addTo(map);
+    }
+
+    function flyTo(lat, lon, zoom = 5) {
+      const map = state.map;
+      if (!map) return;
+      setPick(lat, lon);
+      map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), zoom), duration: 1200 });
     }
 
     // ── Satellite, radar, fires and lightning ──────────────────────────────────
@@ -329,7 +410,7 @@
       else resetParticles();
     });
 
-    return { show, hide, setDraw, setOverlays, isVisible: () => state.visible };
+    return { show, hide, setDraw, setOverlays, flyTo, setPick, isVisible: () => state.visible };
   }
 
   window.WapkGlobe = { attach };
