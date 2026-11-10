@@ -53,12 +53,20 @@
       note: "Water vapour is all the moisture in the air above a point, as mm of water if it all fell out.",
       stops: [[0, "#6b4a2b"], [5, "#a0754a"], [10, "#d2b27a"], [20, "#9fd49a"], [30, "#3fb7c4"], [45, "#2f6fd6"], [60, "#4b2fa8"], [75, "#c04fd0"]],
     },
+    // Windy's "Rain, thunder": the rain (or snow) rate in colour, with a dense pattern of small lightning bolts
+    // where storms are expected and snowflakes where it snows; plain rain has colour only.
+    rainthunder: {
+      label: "Rain, thunder", type: "Rain, thunder", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4, pattern: true,
+      extraFields: ["ptype", "storm"],
+      note: "Rain, thunder shows the rain or snow rate. Small lightning bolts mark expected thunderstorms, snowflakes mark snow.",
+      stops: [[0.1, "#7fb9f0"], [0.5, "#4f9ae8"], [1, "#2f7fdc"], [2, "#2aa76a"], [5, "#d9cf3a"], [10, "#f0882d"], [20, "#e5322d"], [50, "#b3189b"]],
+    },
     freezing: {
       label: "Freezing level", type: "Freezing level", unit: "m above sea level", field: "freezing",
       stops: [[0, "#e7f2ff"], [500, "#b9a6f2"], [1500, "#7b5fd6"], [2500, "#3d7bd9"], [3500, "#2fb3a8"], [4500, "#9ad15a"], [5500, "#f2c931"], [6500, "#f07a2d"]],
     },
     rain: {
-      label: "Rain", type: "Rain rate", unit: "mm/h", field: "precip", transparentBelow: 0.1,
+      label: "Rain", type: "Rain rate", unit: "mm/h", field: "precip", transparentBelow: 0.05, fadeUpTo: 0.4,
       stops: [[0.1, "#a6e1ff"], [0.5, "#4fb3ff"], [1, "#2f7fff"], [2, "#22c35e"], [5, "#f5d63d"], [10, "#f58b2d"], [20, "#e5322d"], [50, "#b3189b"]],
     },
     rainacc: {
@@ -123,7 +131,7 @@
     { key: "wind", label: "Wind", icon: "wind", layers: ["wind", "gust"] },
     { key: "temperature", label: "Temperature", icon: "thermometer", layers: ["temp", "dew", "freezing"] },
     { key: "humidity", label: "Humidity", icon: "humidity", layers: ["humidity", "tcwv"] },
-    { key: "rain", label: "Rain", icon: "rain", layers: ["rain", "rainacc", "ptype"] },
+    { key: "rain", label: "Rain", icon: "rain", layers: ["rainthunder", "rain", "rainacc", "ptype"] },
     { key: "storms", label: "Storms", icon: "bolt", layers: ["storm", "cape"] },
     { key: "snow", label: "Snow", icon: "snowflake", layers: ["snowacc", "snowdepth"] },
     { key: "clouds", label: "Clouds", icon: "cloud", layers: ["cloud", "lowcloud", "midcloud", "highcloud"] },
@@ -196,6 +204,7 @@
     const particles = createParticleLayer({ pane: "forecastWind", attribution: ATTRIBUTION });
     const symbols = createSymbolLayer({ pane: "forecastSymbols" });
     const isobars = createIsobarLayer({ pane: "forecastSymbols" });
+    const precipPattern = createPrecipPatternLayer({ pane: "forecastSymbols" });
     // The colour field is drawn into one canvas placed on the map like an image, so changing the hour
     // repaints pixels instead of encoding a new picture and swapping map layers.
     const colorCanvas = document.createElement("canvas");
@@ -501,6 +510,8 @@
       const layer = hasData(LAYERS[state.layer]) ? LAYERS[state.layer] : null;
       const fields = new Set();
       if (layer) (layer.field ? [layerField(layer, els.level.value)] : windFields()).forEach((field) => fields.add(field));
+      // Rain, thunder also needs the precipitation type and storm category for its symbols.
+      layer?.extraFields?.filter((field) => state.meta.fields[field]).forEach((field) => fields.add(field));
       // Wind is always loaded: the picker shows it whichever layer is on.
       windFields().forEach((field) => fields.add(field));
       return [...fields];
@@ -610,6 +621,21 @@
         map.removeLayer(symbols);
       }
 
+      if (layer?.pattern) {
+        precipPattern.setSource((lats, lons) => {
+          const plan = planFor(state.meta.grid, lats, lons);
+          return {
+            rate: applyPlan(plan, data[layer.field]),
+            ptype: data.ptype ? applyCategoryPlan(plan, data.ptype) : null,
+            storm: data.storm ? applyCategoryPlan(plan, data.storm) : null,
+          };
+        });
+        if (!map.hasLayer(precipPattern)) precipPattern.addTo(map);
+        else precipPattern.redraw();
+      } else if (map.hasLayer(precipPattern)) {
+        map.removeLayer(precipPattern);
+      }
+
       if (layer?.isobars) {
         const pair = smoothPair(data[layer.field], state.meta.grid);
         isobars.setSource((lats, lons) => applyPlan(planFor(state.meta.grid, lats, lons), pair), state.theme);
@@ -681,6 +707,7 @@
       if (map.hasLayer(particles)) map.removeLayer(particles);
       if (map.hasLayer(symbols)) map.removeLayer(symbols);
       if (map.hasLayer(isobars)) map.removeLayer(isobars);
+      if (map.hasLayer(precipPattern)) map.removeLayer(precipPattern);
       options.onDraw?.(null);
     }
 
@@ -1121,8 +1148,10 @@
       pixels[pixel] = colours.table[entry];
       pixels[pixel + 1] = colours.table[entry + 1];
       pixels[pixel + 2] = colours.table[entry + 2];
-      // Category areas get soft, rounded edges from the blended presence instead of square grid cells.
-      const soft = mask ? Math.min(1, Math.max(0, (mask[index] - 0.25) / 0.3)) : 1;
+      // Category areas get soft, rounded edges from the blended presence instead of square grid cells; rain
+      // fades in between transparentBelow and fadeUpTo, so light rain has soft edges rather than a hard cut.
+      let soft = mask ? Math.min(1, Math.max(0, (mask[index] - 0.25) / 0.3)) : 1;
+      if (layer.fadeUpTo) soft *= Math.min(1, (value - layer.transparentBelow) / (layer.fadeUpTo - layer.transparentBelow));
       pixels[pixel + 3] = colours.table[entry + 3] * edge[index] * soft;
     }
     context.putImageData(image, 0, 0);
@@ -1556,6 +1585,132 @@
       },
     });
     return new IsobarLayerClass(options);
+  }
+
+  // ── Rain, thunder symbols ───────────────────────────────────────────────────
+  // A dense, staggered screen grid of tiny symbols over the rain colours, as on Windy: a yellow lightning bolt
+  // where a storm category is expected, a white snowflake where it snows (fainter for a rain–snow mix), and
+  // nothing for plain rain. Only where at least 0.1 mm/h falls, so symbols never sit on dry ground.
+  const PATTERN_SPACING = 15;
+  let PrecipPatternClass = null;
+
+  function createPrecipPatternLayer(options) {
+    PrecipPatternClass ||= L.Layer.extend({
+      initialize(layerOptions) {
+        L.setOptions(this, layerOptions);
+        this._sample = null;
+      },
+
+      onAdd(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create("canvas", "forecast-pattern");
+        this.getPane().appendChild(this._canvas);
+        map.on("moveend resize", this.redraw, this);
+        map.on("movestart", this._clear, this);
+        this.redraw();
+      },
+
+      onRemove(map) {
+        map.off("moveend resize", this.redraw, this);
+        map.off("movestart", this._clear, this);
+        this._canvas.remove();
+        this._canvas = null;
+      },
+
+      // `sample(lats, lons)` returns { rate, ptype, storm } arrays for those points.
+      setSource(sample) {
+        this._sample = sample;
+      },
+
+      _clear() {
+        this._canvas?.getContext("2d").clearRect(0, 0, this._canvas.width, this._canvas.height);
+      },
+
+      redraw() {
+        if (!this._map || !this._canvas || !this._sample) return;
+        const map = this._map;
+        const size = map.getSize();
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        this._canvas.width = Math.round(size.x * ratio);
+        this._canvas.height = Math.round(size.y * ratio);
+        this._canvas.style.width = `${size.x}px`;
+        this._canvas.style.height = `${size.y}px`;
+        L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0, 0]));
+        const context = this._canvas.getContext("2d");
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+        // Grid positions follow the map (not the screen), so the pattern does not shimmer when panning.
+        const origin = map.getPixelBounds().min;
+        const points = [];
+        const firstRow = Math.floor(origin.y / PATTERN_SPACING) - 1;
+        const lastRow = Math.ceil((origin.y + size.y) / PATTERN_SPACING) + 1;
+        for (let row = firstRow; row <= lastRow; row += 1) {
+          const shift = row % 2 ? PATTERN_SPACING / 2 : 0;
+          const firstCol = Math.floor((origin.x - shift) / PATTERN_SPACING) - 1;
+          const lastCol = Math.ceil((origin.x + size.x) / PATTERN_SPACING) + 1;
+          for (let col = firstCol; col <= lastCol; col += 1) {
+            points.push([col * PATTERN_SPACING + shift - origin.x, row * PATTERN_SPACING - origin.y]);
+          }
+        }
+        const lats = new Float64Array(points.length);
+        const lons = new Float64Array(points.length);
+        points.forEach(([x, y], index) => {
+          const point = map.containerPointToLatLng([x, y]);
+          lats[index] = point.lat;
+          lons[index] = point.lng;
+        });
+        const { rate, ptype, storm } = this._sample(lats, lons);
+
+        const bolts = [];
+        const snow = [];
+        const mix = [];
+        points.forEach((point, index) => {
+          if (!(rate[index] >= 0.1)) return;
+          if (storm && storm[index] >= 1) bolts.push(point);
+          else if (ptype && Math.round(ptype[index]) === 3) snow.push(point);
+          else if (ptype && Math.round(ptype[index]) === 2) mix.push(point);
+        });
+
+        // Snowflakes: three crossing strokes.
+        const flakes = (list, alpha, radius) => {
+          if (!list.length) return;
+          context.beginPath();
+          for (const [x, y] of list) {
+            for (const angle of [0, Math.PI / 3, (2 * Math.PI) / 3]) {
+              const dx = Math.cos(angle) * radius;
+              const dy = Math.sin(angle) * radius;
+              context.moveTo(x - dx, y - dy);
+              context.lineTo(x + dx, y + dy);
+            }
+          }
+          context.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+          context.lineWidth = 1.1;
+          context.stroke();
+        };
+        flakes(snow, 0.92, 3.4);
+        flakes(mix, 0.6, 2.8);
+
+        // Lightning bolts: a small zig-zag, yellow with a thin dark edge.
+        if (bolts.length) {
+          context.beginPath();
+          for (const [x, y] of bolts) {
+            context.moveTo(x + 1.2, y - 5);
+            context.lineTo(x - 2.6, y + 0.6);
+            context.lineTo(x - 0.2, y + 0.6);
+            context.lineTo(x - 1.4, y + 5);
+            context.lineTo(x + 2.8, y - 1);
+            context.lineTo(x + 0.4, y - 1);
+            context.closePath();
+          }
+          context.fillStyle = "#f2f24a";
+          context.strokeStyle = "rgba(20, 30, 10, 0.55)";
+          context.lineWidth = 0.6;
+          context.fill();
+          context.stroke();
+        }
+      },
+    });
+    return new PrecipPatternClass(options);
   }
 
   let ParticleLayerClass = null;
