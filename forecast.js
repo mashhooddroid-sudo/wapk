@@ -1657,38 +1657,59 @@
   // nothing for plain rain. Only where at least 0.1 mm/h falls, so symbols never sit on dry ground.
   const PATTERN_SPACING = 15;
 
-  // What falls, from ECMWF's precipitation type (1 rain, 2 rain–snow mix, 3 snow, 4 freezing rain / ice pellets)
-  // and the 2 m temperature at the real terrain height. ECMWF's type is trusted and only adjusted near freezing:
-  // at or below 0 °C snow; 0–1 °C rain turns to sleet; 1–2 °C a mix is sleet; 2–4 °C snow or a mix is sleet;
-  // above 4 °C rain. Freezing rain stays freezing rain up to 3 °C. Without a temperature, ECMWF's type.
-  // (weather-logic.js applies the same rule to the overview.)
+  // What falls, from the 2 m temperature at the real terrain height (the rule asked for): below 0.5 °C snow,
+  // 0.5–3 °C sleet, above 3 °C rain. ECMWF's freezing rain / ice pellets (type 4) stay freezing rain up to 3 °C;
+  // without a temperature, ECMWF's type (1 rain, 2 rain–snow mix, 3 snow, 4 freezing). weather-logic.js applies
+  // the same rule to the overview.
   function precipKind(type, celsius) {
-    const ecmwf = type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
-    if (Number.isNaN(celsius)) return ecmwf;
-    if (type === 4) return celsius <= 3 ? "freezing" : "rain";
-    if (celsius <= 0) return "snow";
-    if (celsius <= 1) return type === 1 ? "mix" : "snow";
-    if (celsius <= 2) return type === 2 ? "mix" : ecmwf;
-    if (celsius <= 4) return type === 1 ? "rain" : "mix";
+    if (Number.isNaN(celsius)) return type === 3 ? "snow" : type === 2 ? "mix" : type === 4 ? "freezing" : "rain";
+    if (type === 4 && celsius <= 3) return "freezing";
+    if (celsius < 0.5) return "snow";
+    if (celsius <= 3) return "mix";
     return "rain";
   }
 
-  // Terrain height (m) at each point from tiles about as detailed as the view (see terrainTile).
+  // Terrain height (m) that about 30 % of each symbol's own patch of the view (about PATTERN_SPACING pixels
+  // across) rises above, from tiles with one height per screen pixel. A symbol stands for its patch: it shows
+  // snow when a fair share of the patch is high enough, so zoomed out a mountain range shows snow and a wide
+  // valley does not, and zooming in only adds detail instead of depending on whether a symbol sits on a peak.
   async function pointHeights(lats, lons, zoom) {
-    const z = Math.max(3, Math.min(12, Math.round(zoom) - 1));
-    const keys = new Map();
-    const heights = new Float32Array(lats.length).fill(NaN);
-    const where = Array.from(lats, (lat, index) => {
-      const x = worldX(lons[index], z);
-      const y = worldY(lat, z);
-      const key = `${Math.floor(x / 256)}/${Math.floor(y / 256)}`;
-      if (!keys.has(key)) keys.set(key, terrainTile(z, ((Math.floor(x / 256) % 2 ** z) + 2 ** z) % 2 ** z, Math.floor(y / 256)));
-      return [key, (Math.floor(y) % 256) * 256 + (Math.floor(x) % 256)];
+    const z = Math.max(3, Math.min(12, Math.round(zoom)));
+    const span = 2 ** z;
+    const reach = Math.floor(PATTERN_SPACING / 2) * 2 ** (z - zoom);
+    const xs = Array.from(lons, (lon) => worldX(lon, z));
+    const ys = Array.from(lats, (lat) => worldY(lat, z));
+    const tiles = new Map();
+    const want = new Set();
+    xs.forEach((x, index) => {
+      for (const tx of [Math.floor((x - reach) / 256), Math.floor((x + reach) / 256)]) {
+        for (const ty of [Math.floor((ys[index] - reach) / 256), Math.floor((ys[index] + reach) / 256)]) {
+          if (ty >= 0 && ty < span) want.add(`${tx}/${ty}`);
+        }
+      }
     });
-    const tiles = new Map(await Promise.all([...keys].map(async ([key, request]) => [key, await request])));
-    where.forEach(([key, offset], index) => {
-      const tile = tiles.get(key);
-      if (tile) heights[index] = tile[offset];
+    await Promise.all([...want].map(async (key) => {
+      const [tx, ty] = key.split("/").map(Number);
+      tiles.set(key, await terrainTile(z, ((tx % span) + span) % span, ty));
+    }));
+    const heightAt = (px, py) => {
+      const tile = tiles.get(`${Math.floor(px / 256)}/${Math.floor(py / 256)}`);
+      return tile ? tile[(py - Math.floor(py / 256) * 256) * 256 + (px - Math.floor(px / 256) * 256)] : NaN;
+    };
+    const heights = new Float32Array(lats.length).fill(NaN);
+    const step = Math.max(1, Math.round(reach / 4));
+    const sample = [];
+    xs.forEach((x, index) => {
+      sample.length = 0;
+      for (let dy = -reach; dy <= reach; dy += step) {
+        for (let dx = -reach; dx <= reach; dx += step) {
+          const height = heightAt(Math.floor(x + dx), Math.floor(ys[index] + dy));
+          if (!Number.isNaN(height)) sample.push(height);
+        }
+      }
+      if (!sample.length) return;
+      sample.sort((a, b) => a - b);
+      heights[index] = sample[Math.min(sample.length - 1, Math.floor(sample.length * 0.7))];
     });
     return heights;
   }
