@@ -302,8 +302,10 @@
       const wait = SLIDER_REDRAW_MS - (performance.now() - sliderDrawnAt);
       sliderTimer = setTimeout(() => {
         sliderDrawnAt = performance.now();
+        state.quickDraw = true;
         render();
       }, Math.max(0, wait));
+      settleSoon();
     });
     els.play.addEventListener("click", () => (state.playTimer ? stopPlayback() : startPlayback()));
     // Clicking the map moves the picker there (Windy-style), inside the forecast area.
@@ -628,7 +630,7 @@
       updatePicker();
 
       if (layer) {
-        const bounds = drawColorField(colorCanvas, state.meta, data, state.layer, level, state.theme);
+        const bounds = drawColorField(colorCanvas, state.meta, data, state.layer, level, state.theme, state.quickDraw);
         softenCategories();
         if (!state.colorOverlay) {
           state.colorOverlay = new CanvasOverlay(colorCanvas, bounds, {
@@ -882,14 +884,28 @@
         // A week plays in 3-hour jumps so it takes about 25 s; shorter forecasts go hour by hour.
         state.hour = Math.min(lastHour(), state.hour + (lastHour() > 72 ? 3 : 1));
         els.slider.value = String(state.hour);
+        state.quickDraw = true;
         render();
       }, PLAY_STEP_MS);
     }
 
     function stopPlayback() {
+      const wasPlaying = Boolean(state.playTimer);
       clearInterval(state.playTimer);
       state.playTimer = null;
       setPlayIcon(false);
+      if (wasPlaying) settleSoon();
+    }
+
+    // While the slider moves or the forecast plays the colours are drawn at half size (a quarter of the work);
+    // shortly after it stops they are drawn sharp again.
+    function settleSoon() {
+      clearTimeout(state.settleTimer);
+      state.settleTimer = setTimeout(() => {
+        if (state.playTimer || !state.quickDraw) return;
+        state.quickDraw = false;
+        render();
+      }, SETTLE_MS);
     }
 
     function setPlayIcon(playing) {
@@ -1179,8 +1195,10 @@
 
   // Pixel layout of the colour canvas (Web Mercator, so each row sits at its true latitude) and its plan.
   const colorGeometries = new WeakMap();
-  function colorGeometry(grid) {
-    if (colorGeometries.has(grid)) return colorGeometries.get(grid);
+  function colorGeometry(grid, width = COLOR_WIDTH) {
+    if (!colorGeometries.has(grid)) colorGeometries.set(grid, new Map());
+    const sizes = colorGeometries.get(grid);
+    if (sizes.has(width)) return sizes.get(width);
     const { north, west, step, nx, ny } = grid;
     const half = step / 2;
     const top = north + half;
@@ -1190,7 +1208,6 @@
     const mercator = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
     const yTop = mercator(top);
     const yBottom = mercator(bottom);
-    const width = COLOR_WIDTH;
     const height = Math.max(1, Math.round((width * (yTop - yBottom)) / (((right - left) * Math.PI) / 180)));
     const lats = new Float64Array(width * height);
     const lons = new Float64Array(width * height);
@@ -1212,14 +1229,14 @@
       }
     }
     const geometry = { width, height, edge, plan: buildPlan(grid, lats, lons), bounds: [[bottom, left], [top, right]] };
-    colorGeometries.set(grid, geometry);
+    sizes.set(width, geometry);
     return geometry;
   }
 
   // Draws the field into `canvas` and returns the map bounds it covers. The canvas is reused for every hour and layer.
-  function drawColorField(canvas, meta, data, layerKey, level, theme) {
+  function drawColorField(canvas, meta, data, layerKey, level, theme, quick) {
     const layer = LAYERS[layerKey];
-    const geometry = colorGeometry(gridOfPair(layer.field ? data[layerField(layer, level)] : data[`u${level}`], meta.grid));
+    const geometry = colorGeometry(gridOfPair(layer.field ? data[layerField(layer, level)] : data[`u${level}`], meta.grid), quick ? COLOR_WIDTH / 2 : COLOR_WIDTH);
     const { width, height, plan, edge } = geometry;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
@@ -1697,6 +1714,8 @@
   const PATTERN_SPACING = 15;
   // Quickest redraw rate while the time slider is dragged.
   const SLIDER_REDRAW_MS = 150;
+  // Quiet time after the slider or playback stops before the colours are redrawn at full size.
+  const SETTLE_MS = 300;
 
   // What falls, from the 2 m temperature at the real terrain height (the rule asked for): below 0.5 °C snow,
   // 0.5–3 °C sleet, above 3 °C rain. ECMWF's freezing rain / ice pellets (type 4) stay freezing rain up to 3 °C;
