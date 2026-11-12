@@ -7,6 +7,9 @@
   const maps = byId('mapsView');
   const health = byId('healthView');
   const HEALTH_HASH = 'healthView';
+  const outlook = byId('outlookView');
+  const OUTLOOK_HASH = 'outlookView';
+  let outlookVisible = false;
   const stage = byId('radarMapStage');
   const fullscreenButton = byId('radarFullscreenButton');
   const viewStatus = byId('radarViewStatus');
@@ -33,7 +36,7 @@
   }
 
   function markNavigation(hash) {
-    const view = hash === MAPS_HASH || hash === HEALTH_HASH ? hash : null;
+    const view = hash === MAPS_HASH || hash === HEALTH_HASH || hash === OUTLOOK_HASH ? hash : null;
     const target = view || hash || 'overview';
     document.querySelectorAll('.nav-link[href^="#"]').forEach((link) => {
       const linkTarget = link.getAttribute('href').slice(1);
@@ -51,6 +54,7 @@
     const wasVisible = mapsVisible;
     mapsVisible = true;
     hideHealth();
+    hideOutlook();
     overview.hidden = true;
     maps.hidden = false;
     document.body.classList.add('view-maps');
@@ -65,9 +69,10 @@
   }
 
   function showOverview(hash) {
-    const wasMaps = mapsVisible || healthVisible;
+    const wasMaps = mapsVisible || healthVisible || outlookVisible;
     mapsVisible = false;
     hideHealth();
+    hideOutlook();
     exitFullscreen();
     radar()?.hide();
     maps.hidden = true;
@@ -85,6 +90,7 @@
     const wasVisible = healthVisible;
     healthVisible = true;
     mapsVisible = false;
+    hideOutlook();
     exitFullscreen();
     radar()?.hide();
     maps.hidden = true;
@@ -99,6 +105,32 @@
     window.WapkHealth?.show();
   }
 
+  function showOutlook() {
+    const wasVisible = outlookVisible;
+    outlookVisible = true;
+    mapsVisible = false;
+    hideHealth();
+    exitFullscreen();
+    radar()?.hide();
+    maps.hidden = true;
+    overview.hidden = true;
+    outlook.hidden = false;
+    document.body.classList.remove('view-maps');
+    document.title = `7-day outlook — ${baseTitle}`;
+    if (!wasVisible) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      byId('outlookHeading')?.focus({ preventScroll: true });
+    }
+    window.WapkOutlook?.show();
+  }
+
+  function hideOutlook() {
+    if (!outlookVisible) return;
+    outlookVisible = false;
+    outlook.hidden = true;
+    window.WapkOutlook?.hide();
+  }
+
   function hideHealth() {
     if (!healthVisible) return;
     healthVisible = false;
@@ -108,7 +140,7 @@
 
   function route() {
     const hash = embedded ? MAPS_HASH : decodeURIComponent(window.location.hash.slice(1));
-    if (hash === MAPS_HASH) showMaps(); else if (hash === HEALTH_HASH) showHealth(); else showOverview(hash);
+    if (hash === MAPS_HASH) showMaps(); else if (hash === HEALTH_HASH) showHealth(); else if (hash === OUTLOOK_HASH) showOutlook(); else showOverview(hash);
     markNavigation(hash);
   }
 

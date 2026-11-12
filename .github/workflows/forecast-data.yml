@@ -8,6 +8,8 @@
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   CLOUDFLARE_API_TOKEN  – a Cloudflare API token with "Cloudflare Pages: Edit" permission
 #   CLOUDFLARE_ACCOUNT_ID – e35f62e834050b6f12e9103657ebcb53 (Mashhood.droid@gmail.com's Account)
+# and, for the written 7-day outlook (outlook.json; without it only its tables are published):
+#   ANTHROPIC_API_KEY     – a Claude API key
 name: Forecast map data
 
 on:
@@ -52,6 +54,23 @@ jobs:
       - name: Build forecast data (skipped if this run is already published)
         id: build
         run: python pipeline/build_forecast.py --out forecast-out ${{ (inputs.force || inputs.target == 'preview') && ' ' || '--published-url https://wapk-forecast.pages.dev/latest.json' }}
+
+      # The 7-day outlook (pipeline/outlook): the site's weather rules for ~40 places, written up by Claude.
+      # A failure here never blocks the map data.
+      - uses: actions/setup-node@v5
+        if: steps.build.outputs.changed == 'true'
+        with:
+          node-version: "22"
+
+      - name: Write the 7-day outlook
+        if: steps.build.outputs.changed == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npm ci --prefix pipeline/outlook --no-audit --no-fund
+          node pipeline/outlook/build_outlook.mjs forecast-out
 
       - name: Publish to Cloudflare Pages
         if: steps.build.outputs.changed == 'true'

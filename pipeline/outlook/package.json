@@ -1,0 +1,9 @@
+{
+  "name": "wapk-outlook",
+  "private": true,
+  "type": "module",
+  "description": "Builds outlook.json, the WAPK 7-day written outlook (see build_outlook.mjs).",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0"
+  }
+}

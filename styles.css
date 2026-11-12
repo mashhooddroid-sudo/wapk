@@ -779,3 +779,59 @@ summary.disease-row:hover .disease-name { color: var(--accent); }
   .week-col { font-size: 11.5px; grid-template-rows: repeat(5, 30px); }
   .week-labels-col { padding-left: 8px; font-size: 9.5px; line-height: 1.15; }
 }
+
+/* Outlook tab: WAPK's written 7-day forecast (outlook.js). */
+.outlook-view .page-heading { margin-bottom: 14px; align-items: flex-end; }
+.outlook-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.outlook-lang { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 12px; }
+.outlook-lang button { padding: 7px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font: 600 12px 'DM Sans', sans-serif; cursor: pointer; }
+.outlook-lang button[lang="ur"] { font-family: 'Noto Nastaliq Urdu', 'DM Sans', sans-serif; }
+.outlook-lang button[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
+.outlook-body { display: grid; gap: 14px; }
+.outlook-body.is-urdu { font-family: 'Noto Nastaliq Urdu', 'DM Sans', sans-serif; line-height: 2.1; }
+.outlook-lead { padding: 20px 22px; }
+.outlook-headline { margin: 0 0 8px; font: 700 20px/1.35 'Manrope', sans-serif; color: var(--ink); }
+.is-urdu .outlook-headline { font: 600 20px/2 'Noto Nastaliq Urdu', serif; }
+.outlook-overview { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.65; }
+.outlook-note { margin: 0; padding: 14px 16px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); font-size: 13px; }
+.outlook-card { padding: 16px 18px; }
+.outlook-card-title { margin: 0 0 10px; font: 700 13px 'Manrope', sans-serif; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.is-urdu .outlook-card-title { text-transform: none; letter-spacing: 0; font: 600 14px 'Noto Nastaliq Urdu', serif; }
+.outlook-card p { margin: 0 0 10px; font-size: 13.5px; line-height: 1.6; color: var(--ink); }
+.is-urdu .outlook-card p, .is-urdu .outlook-overview { font-size: 15px; line-height: 2.1; }
+.outlook-advisories { border-color: #f2b23a66; }
+.outlook-advisory-list { margin: 0; padding-inline-start: 18px; display: grid; gap: 6px; font-size: 13.5px; color: var(--ink); }
+.outlook-advisory-list li::marker { color: #f2b23a; }
+.outlook-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.outlook-day { padding: 10px 0; border-top: 1px solid var(--line); }
+.outlook-day:first-of-type { border-top: 0; padding-top: 0; }
+.outlook-day h3 { margin: 0 0 4px; font: 650 14px 'Manrope', sans-serif; color: var(--accent); }
+.is-urdu .outlook-day h3 { font: 600 15px 'Noto Nastaliq Urdu', serif; }
+.outlook-day p { margin: 0; }
+.outlook-table { width: 100%; border-collapse: collapse; font-size: 12.5px; color: var(--ink); }
+.outlook-table th, .outlook-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: start; vertical-align: middle; }
+.outlook-table thead th { color: var(--muted); font-weight: 600; font-size: 11.5px; white-space: nowrap; }
+.outlook-table .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+.outlook-region { padding: 10px 0; border-top: 1px solid var(--line); }
+.outlook-region:first-of-type { border-top: 0; }
+.outlook-region summary { cursor: pointer; font: 650 14px 'Manrope', sans-serif; color: var(--ink); margin-bottom: 8px; }
+.is-urdu .outlook-region summary { font: 600 15px 'Noto Nastaliq Urdu', serif; }
+.outlook-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.outlook-places { min-width: 640px; }
+.outlook-places tbody th { font-weight: 600; white-space: nowrap; }
+.outlook-elev { display: block; color: var(--muted); font-size: 10.5px; font-weight: 500; font-family: 'DM Sans', sans-serif; }
+.outlook-cell { text-align: center !important; white-space: nowrap; }
+.outlook-icon { display: block; width: 30px; height: 30px; margin: 0 auto 2px; }
+.outlook-icon svg { width: 100%; height: 100%; }
+.outlook-temps { display: inline-flex; gap: 4px; font-variant-numeric: tabular-nums; }
+.outlook-temps span { color: var(--muted); }
+.outlook-mm, .outlook-snowcm { display: block; font-size: 10.5px; color: #4fb3ff; font-family: 'DM Sans', sans-serif; }
+.outlook-snowcm { color: #c8e6ff; font-weight: 600; }
+:root[data-theme="light"] .outlook-snowcm { color: #3a6ea8; }
+.outlook-source { margin: 0; color: var(--muted); font-size: 11px; }
+@media (max-width: 860px) {
+  .outlook-grid { grid-template-columns: minmax(0, 1fr); }
+  .outlook-view .page-heading { align-items: flex-start; }
+  .outlook-headline { font-size: 17px; }
+}
+.outlook-temps, .outlook-mm, .outlook-snowcm, .outlook-elev, .outlook-table .num { direction: ltr; unicode-bidi: isolate; }

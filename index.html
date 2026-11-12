@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20261029-48">
+  <link rel="stylesheet" href="styles.css?v=20261112-50">
   <link rel="stylesheet" href="radar.css?v=20261110-53">
 </head>
 <body>
@@ -33,6 +33,7 @@
       <a class="nav-link" href="#hourlySection"><span data-icon="clock"></span>Hourly forecast</a>
       <a class="nav-link" href="#weekSection"><span data-icon="calendar"></span>This week</a>
       <a class="nav-link" href="#mapsView"><span data-icon="map"></span>Maps<span class="nav-indicator"></span></a>
+      <a class="nav-link" href="#outlookView"><span data-icon="layers"></span>Outlook<span class="nav-indicator"></span></a>
       <a class="nav-link" href="#healthView"><span data-icon="heart"></span>Health<span class="nav-indicator"></span></a>
     </nav>
     <div class="saved-heading"><h2>Saved places</h2><span data-icon="bookmark"></span></div>
@@ -61,7 +62,7 @@
         <div id="unitControls" class="unit-controls" role="group" aria-label="Temperature units"><button type="button" data-unit="C" aria-pressed="true">°C</button><button type="button" data-unit="F" aria-pressed="false">°F</button></div>
         <button id="themeButton" class="icon-button theme-button" type="button" aria-label="Switch to light theme" title="Change theme"><span id="themeIcon" data-icon="sun"></span></button>
       </div>
-      <nav class="mobile-nav" aria-label="Weather sections"><a href="#overview">Overview</a><a href="#hourlySection">Hourly</a><a href="#weekSection">This week</a><a href="#mapsView">Maps</a><a href="#healthView">Health</a><a href="#savedPlaces">Saved places</a></nav>
+      <nav class="mobile-nav" aria-label="Weather sections"><a href="#overview">Overview</a><a href="#hourlySection">Hourly</a><a href="#weekSection">This week</a><a href="#mapsView">Maps</a><a href="#outlookView">Outlook</a><a href="#healthView">Health</a><a href="#savedPlaces">Saved places</a></nav>
     </header>
 
     <main id="overview" class="main-content">
@@ -117,6 +118,16 @@
       </div>
       <footer class="footer"><p><span class="status-dot"></span><span id="lastUpdated">Connecting to forecast data</span><button id="refreshButton" type="button" aria-label="Refresh weather" title="Refresh weather"><span data-icon="refresh"></span></button></p><p>Forecasts by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a><span class="footer-dot">·</span>Air quality by CAMS<span class="footer-dot">·</span>Airport METAR via Travel Weather API<span class="footer-dot">·</span>Made with a little sunshine.</p></footer>
     </main>
+    <section id="outlookView" class="main-content outlook-view" role="main" aria-labelledby="outlookHeading" hidden>
+      <div class="page-heading">
+        <div><p class="eyebrow">7-DAY OUTLOOK</p><h1 id="outlookHeading" tabindex="-1">Pakistan weather outlook</h1><p class="radar-intro">The week ahead, region by region: rain, storms, snowline and temperatures from WAPK's forecast.</p></div>
+        <div class="outlook-actions">
+          <div class="outlook-lang" role="group" aria-label="Language"><button type="button" data-outlook-lang="en" aria-pressed="true">English</button><button type="button" data-outlook-lang="ur" aria-pressed="false" lang="ur">اردو</button></div>
+          <button id="outlookRefresh" class="save-button" type="button"><span data-icon="refresh"></span><span id="outlookUpdated">Refresh</span></button>
+        </div>
+      </div>
+      <div id="outlookBody" class="outlook-body" aria-live="polite"><p class="empty-state">Loading the outlook…</p></div>
+    </section>
     <section id="healthView" class="main-content health-view" role="main" aria-labelledby="healthHeading" aria-busy="false" hidden>
       <div class="page-heading">
         <div><p class="eyebrow">HEALTH &amp; SAFETY</p><h1 id="healthHeading" tabindex="-1">Health<span id="healthPlace" class="radar-country">Your location</span></h1><p class="radar-intro">Air quality, pollen, seasonal diseases and weather health alerts.</p></div>
@@ -284,7 +295,8 @@
   <script src="imdradar.js?v=20261107-67"></script>
   <script src="pointforecast.js?v=20261110-4"></script>
   <script src="health.js?v=20261028-8"></script>
-  <script src="views.js?v=20261029-10"></script>
+  <script src="outlook.js?v=20261112-2"></script>
+  <script src="views.js?v=20261112-11"></script>
   <script src="effects.js?v=glass-1"></script>
 </body>
 </html>

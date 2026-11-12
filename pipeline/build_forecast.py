@@ -532,6 +532,7 @@ def build(out, steps, published_url=None):
         handle.write(
             "/*\n  Access-Control-Allow-Origin: *\n"
             "/latest.json\n  Cache-Control: public, max-age=300\n"
+            "/outlook.json\n  Cache-Control: public, max-age=300\n"
             "/runs/*\n  Cache-Control: public, max-age=31536000, immutable\n"
             "  Content-Type: text/plain; charset=x-user-defined\n"
         )
