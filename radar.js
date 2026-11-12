@@ -771,7 +771,7 @@
         className: "pmd-radar-frame",
         opacity: getWeatherOpacity(),
         interactive: false,
-        attribution: 'Radar &copy; <a href="https://ffd.pmd.gov.pk/radar" target="_blank" rel="noopener noreferrer">PMD FFD</a>',
+        attribution: 'Radar &copy; <a href="https://radar.weather.gov.pk/jbirds" target="_blank" rel="noopener noreferrer">PMD J-BIRDS</a>',
       }).addTo(state.pmdLayer);
       lines.push({ text: `${site.name}: live, ${formatRadarTime(frameMs)} (${formatAge(frameMs)})`, bounds, name: site.name });
       pmdDrawn = true;
@@ -1532,7 +1532,7 @@
       if (!(layer instanceof L.ImageOverlay) || !(layer.options.opacity > 0) || !layer._url) return;
       const bounds = layer.getBounds();
       let src = layer._url;
-      if (typeof src === "string" && src.startsWith("https://ffd.pmd.gov.pk/")) src = apiUrl(`/api/pmd-image?u=${encodeURIComponent(src)}`);
+      if (typeof src === "string" && /^https:\/\/(ffd\.pmd\.gov\.pk|radar\.weather\.gov\.pk)\//.test(src)) src = apiUrl(`/api/pmd-image?u=${encodeURIComponent(src)}`);
       const order = Number(state.map.getPane(layer.options.pane || "overlayPane")?.style.zIndex) || 400;
       images.push({ src, order, opacity: layer.options.opacity, bounds: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()] });
     });

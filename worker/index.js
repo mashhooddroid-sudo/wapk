@@ -1022,7 +1022,9 @@ async function handlePmdImage(target) {
   } catch {
     return jsonResponse({ success: false, error: "Bad image address." }, 400);
   }
-  if (source.protocol !== "https:" || source.hostname !== "ffd.pmd.gov.pk" || !source.pathname.startsWith("/storage/radar/") || !/\.(png|gif|jpe?g)$/i.test(source.pathname)) {
+  const allowed = (source.hostname === "ffd.pmd.gov.pk" && source.pathname.startsWith("/storage/radar/"))
+    || (source.hostname === "radar.weather.gov.pk" && source.pathname.startsWith("/jbirds/images/"));
+  if (source.protocol !== "https:" || !allowed || !/\.(png|gif|jpe?g)$/i.test(source.pathname)) {
     return jsonResponse({ success: false, error: "Only PMD radar images." }, 400);
   }
   const cacheKey = new Request(`https://wapk-cache.internal/pmd-image${source.pathname}`);
@@ -1112,7 +1114,85 @@ async function handlePmdRadar() {
   return jsonResponse(pmdRadarCache.body, 200, { "Cache-Control": "public, max-age=120" });
 }
 
+// Since early November 2026 PMD publishes its radar pictures on J-BIRDS (radar.weather.gov.pk/jbirds); the old
+// FFD manifest stopped updating. The J-BIRDS page itself sits behind a bot check, but its image folders are
+// public directory listings: one folder per product, files named
+// <site>_<position>_<YYYYMMDDHHMM, Pakistan time>_<product>_<range>km.png. The pictures are the same 360 px
+// squares as before, so the radar circles' map bounds are unchanged.
+const JBIRDS_IMAGES = "https://radar.weather.gov.pk/jbirds/images/";
+const JBIRDS_SITES = [
+  {
+    id: "islamabad", name: "Islamabad", center: [33.682556, 73.064111],
+    bounds: { 200: [[35.4791865649, 70.9050100462], [31.8859254351, 75.2232119538]], 450: [[37.724974771, 68.2061338539], [29.640137229, 77.9220881461]] },
+  },
+  {
+    id: "karachi", name: "Karachi", center: [24.929105491342696, 67.14342119538176],
+    bounds: { 200: [[26.7240959826, 65.1622013871], [23.1340762374, 69.1246374929]], 450: [[28.9678583232, 62.6856788211], [20.8903138968, 71.6011600589]] },
+  },
+];
+const JBIRDS_PRODUCTS = [
+  { folder: "074", code: "rain12", label: "Rainfall — 12 h accumulation", units: "mm", radiusKm: 450, cadenceMinutes: 60, legend: "Accumulated-R_12h_legend.png" },
+  { folder: "068", code: "sri", label: "Surface rain rate", units: "mm/hr", radiusKm: 450, cadenceMinutes: 10, legend: "Surface-R_legend.png" },
+  { folder: "046", code: "cappi01", label: "CAPPI rain rate (1 km)", units: "mm/hr", radiusKm: 200, cadenceMinutes: 10, legend: "CAPPI-R_legend.png" },
+];
+const JBIRDS_FRAMES = 30;
+
 async function fetchPmdRadar() {
+  const listing = async (siteId, product) => {
+    const folder = `${JBIRDS_IMAGES}radar/${siteId}/${product.folder}/`;
+    const response = await fetch(folder, {
+      headers: { "User-Agent": "WAPK-Weather-Alert-PK/1.0 (+https://wapk.pages.dev)" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`J-BIRDS ${siteId}/${product.folder} returned ${response.status}`);
+    const html = await response.text();
+    const pattern = new RegExp(`href="(${siteId}_[A-Z0-9_]+_(\\d{12})_[a-zA-Z0-9_]+km\\.png)"`, "g");
+    const frames = [...html.matchAll(pattern)].map(([, file, stamp]) => ({
+      url: `${folder}${file}`,
+      time: `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(8, 10)}:${stamp.slice(10, 12)}:00+05:00`,
+    }));
+    frames.sort((a, b) => a.time.localeCompare(b.time));
+    return frames.slice(-JBIRDS_FRAMES);
+  };
+
+  const sites = await Promise.all(JBIRDS_SITES.map(async (site) => {
+    const results = await Promise.allSettled(JBIRDS_PRODUCTS.map((product) => listing(site.id, product)));
+    return {
+      id: site.id,
+      name: site.name,
+      center: site.center,
+      bounds: site.bounds,
+      maintenance: false,
+      upstreamOk: results.some((result) => result.status === "fulfilled"),
+      products: JBIRDS_PRODUCTS.map((product, index) => {
+        const frames = results[index].status === "fulfilled" ? results[index].value : [];
+        return {
+          code: product.code,
+          label: product.label,
+          units: product.units,
+          radiusKm: product.radiusKm,
+          cadenceMinutes: product.cadenceMinutes,
+          legend: `${JBIRDS_IMAGES}legends/${product.legend}`,
+          latestAt: frames.at(-1)?.time || null,
+          frames,
+        };
+      }),
+    };
+  }));
+  if (!sites.some((site) => site.upstreamOk)) throw new Error("J-BIRDS radar folders were unreachable.");
+
+  return {
+    success: true,
+    source: "PMD J-BIRDS radar",
+    sourceUrl: "https://radar.weather.gov.pk/jbirds",
+    fetchedAt: new Date().toISOString(),
+    mirrorStale: false,
+    sites,
+  };
+}
+
+// The FFD manifest reader, kept for reference while J-BIRDS is new; no longer called.
+async function fetchPmdRadarFfd() {
   const response = await fetch(PMD_RADAR_MANIFEST, {
     headers: {
       Accept: "application/json",
