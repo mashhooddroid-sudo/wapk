@@ -99,10 +99,16 @@ async function fetchForecasts() {
     hourly: "precipitation_probability,visibility,uv_index,freezing_level_height,temperature_500hPa,lifted_index,wind_speed_500hPa",
     daily: "uv_index_max,precipitation_probability_max",
   });
-  const [payloads, extras] = await Promise.all([getJson(`https://api.open-meteo.com/v1/forecast?${main}`), getJson(`https://api.open-meteo.com/v1/forecast?${aux}`)]);
+  // PM2.5 (CAMS) for the fog rule, as on the site; the outlook still builds without it.
+  const air = new URLSearchParams({ latitude: place.latitude, longitude: place.longitude, timezone: TIMEZONE, forecast_days: "5", hourly: "pm2_5" });
+  const [payloads, extras, airs] = await Promise.all([
+    getJson(`https://api.open-meteo.com/v1/forecast?${main}`),
+    getJson(`https://api.open-meteo.com/v1/forecast?${aux}`),
+    getJson(`https://air-quality-api.open-meteo.com/v1/air-quality?${air}`).catch(() => []),
+  ]);
   return payloads.map((payload, index) => {
-    for (const key of ["hourly", "daily"]) {
-      const extra = extras[index]?.[key];
+    for (const [key, source] of [["hourly", extras], ["daily", extras], ["hourly", airs]]) {
+      const extra = source[index]?.[key];
       if (!extra) continue;
       const position = new Map(extra.time.map((time, i) => [time, i]));
       for (const [field, values] of Object.entries(extra)) {

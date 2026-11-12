@@ -1,9 +1,10 @@
 (() => {
   'use strict';
 
-  // Thunderstorm, hail and fog classification, ported from the Weather & Prayer Alert PK app
+  // Thunderstorm and hail classification, ported from the Weather & Prayer Alert PK app
   // (lib/services/weather_controller.dart, documented in its WEATHER_LOGIC.md). Thresholds are the app's,
   // fitted to Pakistan stations and three confirmed hail events in Sep 2026, so keep them in step with it.
+  // Fog (classifyFog) is the site's own since Nov 2026; the app still uses visibility alone.
   //
   // Input is an Open-Meteo forecast for ECMWF IFS (models=ecmwf_ifs) with the best_match fields merged in:
   // precipitation_probability, visibility, freezing_level_height, temperature_500hPa, lifted_index and
@@ -102,14 +103,80 @@
     return warmLayerM <= 4200 && t500C <= -4 && shearKt >= 17;
   }
 
-  // Fog from visibility, only where the hour is otherwise clear or cloudy.
+  // Fog and mist, only where the hour is otherwise clear or cloudy (rain, snow and storms always win).
+  //
+  // The model's own fog code and visibility are not used on their own: in Nov 2026 tests they put fog in the dry
+  // Gilgit-Baltistan and Kaghan valleys (code 45 at 65 % humidity, low visibility from cloud on the slopes) and
+  // never went below 4 km in Lahore, Multan or Faisalabad while the airports reported 350–800 m fog every morning.
+  // Instead fog comes from the dew-point spread (temperature − dew point), light wind and night/morning hours. In
+  // the plains smog lets fog form at a wider spread, so PM2.5 (CAMS) widens the thresholds: fog mornings had
+  // PM2.5 130–250 in Punjab, while Peshawar at 35–65 had only haze at the same spreads.
+  const SKY_FROM_FOG = new Set([44, 45, 46, 47, 48]);
   function fogFromVisibility(code, visibilityM) {
-    if (visibilityM === null || code > 3) return code;
+    if (visibilityM === null) return code;
     if (visibilityM < 50) return 47;
     if (visibilityM <= 200) return 46;
     if (visibilityM <= 500) return 45;
     if (visibilityM <= 1000) return 44;
     return code;
+  }
+
+  function classifyFog(code, fields, ctx) {
+    // The model's fog codes become the sky they hide; this rule decides fog afresh.
+    if (SKY_FROM_FOG.has(code)) code = codeFromCloudCover(fields.cloud);
+    if (code > 3 || fields.temp === null || fields.dew === null) return code;
+    if ((fields.mm ?? 0) >= 0.2) return code;
+    const spread = Math.max(0, fields.temp - fields.dew);
+    const wind = fields.wind ?? 0;
+    const hour = fields.time ? Number(fields.time.slice(11, 13)) : 6;
+    const month = fields.time ? Number(fields.time.slice(5, 7)) : 12;
+    const nightOrMorning = hour >= 20 || hour <= 10;
+    const elevation = ctx.elevation ?? 0;
+    const coastal = elevation < 1000 && (ctx.latitude ?? 90) < 27;
+    const dryNorth = elevation >= 1000 && (ctx.latitude ?? 0) >= 34.5;
+    let fog = code;
+
+    if (elevation >= 1000) {
+      // Mountains. The northern valleys (Gilgit-Baltistan, Chitral, upper Swat and Kaghan) are very dry: only
+      // a saturated, calm hour gives mist, and fog needs a spread of 0.2 °C or less.
+      if (dryNorth) {
+        if (wind <= 6 && nightOrMorning && spread <= 0.2) fog = 45;
+        else if (wind <= 6 && nightOrMorning && spread <= 0.5) fog = 44;
+      } else if (spread <= 0.5 && wind <= 15) {
+        fog = 45; // hill fog (cloud on the hills, e.g. Murree and the Galiyat), any hour
+      } else if (spread <= 1 && wind <= 15) {
+        fog = 44;
+      }
+    } else {
+      // Plains: radiation fog in the cold season, wider with smog.
+      const pm = fields.pm25 ?? ctx.pm25Fallback ?? 0;
+      let off = Math.min(2.5, Math.max(0, (pm - 40) / 50));
+      // Lower Sindh and the coast (south of 27°N): humid sea air keeps the spread small without fog (Karachi
+      // had haze and mist at 1.5–2.5 km while the spread was near 1 °C), so smog adds little and fog needs calm.
+      if (coastal) off *= 0.3;
+      // Fog season is November to February; October and March only with a near-saturated hour.
+      const season = month >= 11 || month <= 2 ? 1 : month === 10 || month === 3 ? 0.5 : 0.25;
+      const mist = (2 + off) * season;
+      const fogAt = (1 + off) * season;
+      const dense = (0.5 + off * 0.4) * season;
+      const lingering = !nightOrMorning && spread <= 0.5 && wind <= 6 && season === 1; // all-day winter fog
+      if (nightOrMorning || lingering) {
+        if (!coastal && spread <= 0.3 && wind <= 3 && (month === 12 || month === 1) && pm >= 100) fog = 47;
+        else if (!coastal && spread <= dense && wind <= 6) fog = 46;
+        else if (coastal && spread <= 0.3 && wind <= 5) fog = 45;
+        else if (coastal) { if (spread <= 1.5 && wind <= 12) fog = 44; }
+        else if (spread <= fogAt && wind <= 10) fog = 45;
+        else if (spread <= mist && wind <= 15) fog = 44;
+      }
+    }
+
+    // The model's visibility only adds weight in a nearly saturated hour (not in the dry north or on the coast).
+    if (!dryNorth && !coastal && spread <= 1 && fields.vis !== null && fields.vis <= 1000) {
+      const byVis = fogFromVisibility(code, fields.vis);
+      if ((SEVERITY[byVis] ?? 0) > (SEVERITY[fog] ?? 0)) fog = byVis;
+    }
+    if (fog >= 45 && fog <= 47 && fields.temp < 0) fog = 48;
+    return fog;
   }
 
   function capeIntensity(code, cape) {
@@ -171,8 +238,12 @@
   function hourFields(hourly, index) {
     const at = (name) => num(hourly[name]?.[index]);
     return {
+      time: typeof hourly.time?.[index] === 'string' ? hourly.time[index] : null,
       code: at('weather_code') ?? 0,
       temp: at('temperature_2m'),
+      dew: at('dew_point_2m'),
+      wind: at('wind_speed_10m'),
+      pm25: at('pm2_5'),
       cape: at('cape'),
       mm: at('precipitation'),
       cloud: at('cloud_cover') === null ? null : Math.round(at('cloud_cover')),
@@ -186,20 +257,32 @@
   }
 
   // What an hour shows on its own (hourly strip and current conditions).
-  function classifyHour(fields, elevation, codeOverride) {
+  function classifyHour(fields, ctx, codeOverride) {
     let code = fixPrecipTypeForTemp(codeOverride ?? fields.code, fields.temp);
     code = refineThunderstorm(code, fields);
-    const hail = isStormCode(code) && hailReachesGround(fields.freeze, fields.t500, fields.wind500, elevation);
+    const hail = isStormCode(code) && hailReachesGround(fields.freeze, fields.t500, fields.wind500, ctx.elevation);
     if ((fields.cloud ?? 0) >= 90 && (code === 1 || code === 2)) code = 3;
-    code = fogFromVisibility(code, fields.vis);
+    code = classifyFog(code, fields, ctx);
     return { code, hail, intensity: capeIntensity(code, fields.cape) };
+  }
+
+  const isFogCode = (code) => code >= 45 && code <= 48;
+  // Fog headlines a day (or a day/night half) only when it lasts: 3+ fog hours, or 4+ hours of mist or fog.
+  function fogHeadline(code, codes, minFog) {
+    if (code > 3) return code;
+    const fogs = codes.filter(isFogCode);
+    if (fogs.length >= minFog) return mostFrequent(fogs);
+    if (codes.filter((value) => value === 44 || isFogCode(value)).length >= minFog + 1) return 44;
+    return code;
   }
 
   // One calendar day: day and night headlines, the day's overall headline (re-tiered from the 24-hour
   // total when it is rain or a storm), thunderstorm intensity from the day's CAPE, and the hail flag.
-  function classifyDay(hourly, date, sunrise, sunset, elevation) {
+  function classifyDay(hourly, date, sunrise, sunset, ctx) {
     const dayCodes = [];
     const nightCodes = [];
+    const dayFog = [];
+    const nightFog = [];
     const dayCloud = [];
     const nightCloud = [];
     let maxCape = null;
@@ -215,10 +298,12 @@
       let code = fixPrecipTypeForTemp(fields.code, fields.temp);
       if (code === 95 || code === 96 || code === 99) upstreamStorm = true;
       code = refineThunderstorm(code, fields);
-      code = fogFromVisibility(code, fields.vis);
+      // Fog and mist hours count as their sky for the headline; fogHeadline adds them back when they last.
+      const withFog = classifyFog(code, fields, ctx);
+      code = withFog === 44 || isFogCode(withFog) ? codeFromCloudCover(fields.cloud) : withFog;
       if (isStormCode(code)) {
         anyStormHour = true;
-        if (hailReachesGround(fields.freeze, fields.t500, fields.wind500, elevation)) hail = true;
+        if (hailReachesGround(fields.freeze, fields.t500, fields.wind500, ctx.elevation)) hail = true;
       }
       if (fields.cape !== null && (maxCape === null || fields.cape > maxCape)) maxCape = fields.cape;
       precipSum += fields.mm ?? 0;
@@ -227,9 +312,11 @@
       // Local wall-clock strings of the same form compare correctly as text.
       if (sunrise && sunset && time > sunrise && time < sunset) {
         dayCodes.push(code);
+        dayFog.push(withFog);
         if (fields.cloud !== null) dayCloud.push(fields.cloud);
       } else {
         nightCodes.push(code);
+        nightFog.push(withFog);
         if (fields.cloud !== null) nightCloud.push(fields.cloud);
       }
     });
@@ -248,10 +335,11 @@
     // so a day that starts with sleet and turns to rain still shows it.
     const wintry = all.filter((value) => [56, 57, 66, 67, 68, 69, 71, 73, 75, 77, 85, 86].includes(value));
     if (wintry.length >= 3 && !isStormCode(code)) code = dominantCode(wintry);
+    code = fogHeadline(code, [...dayFog, ...nightFog], 3);
     return {
       code,
-      dayCode: dayCodes.length ? headline(dayCodes, dayCloud) : null,
-      nightCode: nightCodes.length ? headline(nightCodes, nightCloud) : null,
+      dayCode: dayCodes.length ? fogHeadline(headline(dayCodes, dayCloud), dayFog, 2) : null,
+      nightCode: nightCodes.length ? fogHeadline(headline(nightCodes, nightCloud), nightFog, 2) : null,
       intensity: capeIntensity(code, maxCape),
       maxCape,
       hail,
@@ -262,15 +350,21 @@
   function classifyForecast(payload, currentIndex) {
     const hourly = payload.hourly;
     const daily = payload.daily;
-    const elevation = num(payload.elevation);
-    const hours = hourly.time.map((_, index) => classifyHour(hourFields(hourly, index), elevation));
-    const days = daily.time.map((date, index) => classifyDay(hourly, date, daily.sunrise?.[index], daily.sunset?.[index], elevation));
+    // PM2.5 (CAMS, about 5 days) widens the plains' fog thresholds; later days use the typical morning value.
+    const mornings = (hourly.pm2_5 || []).filter((value, index) => num(value) !== null && /T0[5-9]/.test(hourly.time[index] || '')).sort((a, b) => a - b);
+    const ctx = {
+      elevation: num(payload.elevation),
+      latitude: num(payload.latitude),
+      pm25Fallback: mornings.length ? mornings[Math.floor(mornings.length / 2)] : null,
+    };
+    const hours = hourly.time.map((_, index) => classifyHour(hourFields(hourly, index), ctx));
+    const days = daily.time.map((date, index) => classifyDay(hourly, date, daily.sunrise?.[index], daily.sunset?.[index], ctx));
     // The current hour uses the model's current code with that hour's environment, as the app does.
     const now = hourFields(hourly, currentIndex);
     if (num(payload.current?.precipitation) !== null) now.mm = payload.current.precipitation;
     if (num(payload.current?.cloud_cover) !== null) now.cloud = Math.round(payload.current.cloud_cover);
     if (num(payload.current?.temperature_2m) !== null) now.temp = payload.current.temperature_2m;
-    const current = classifyHour(now, elevation, num(payload.current?.weather_code) ?? now.code);
+    const current = classifyHour(now, ctx, num(payload.current?.weather_code) ?? now.code);
     return { hours, days, current };
   }
 

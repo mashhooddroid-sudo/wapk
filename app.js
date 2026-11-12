@@ -277,13 +277,16 @@
       hourly: 'precipitation_probability,visibility,uv_index,freezing_level_height,temperature_500hPa,lifted_index,wind_speed_500hPa',
       daily: 'uv_index_max,precipitation_probability_max'
     });
-    const [payload, aux] = await Promise.all([
+    // PM2.5 (CAMS) for the fog rule: smog lets fog form at a lower humidity in the plains.
+    const airParameters = new URLSearchParams({ latitude: place.latitude, longitude: place.longitude, timezone: 'auto', forecast_days: '5', hourly: 'pm2_5' });
+    const [payload, aux, air] = await Promise.all([
       requestJSON(`https://api.open-meteo.com/v1/forecast?${parameters}`, controller),
-      // The forecast still shows without these; storms then rely on rain amount alone.
-      requestJSON(`https://api.open-meteo.com/v1/forecast?${auxParameters}`, controller).catch(() => null)
+      // The forecast still shows without these; storms then rely on rain amount alone, fog on humidity alone.
+      requestJSON(`https://api.open-meteo.com/v1/forecast?${auxParameters}`, controller).catch(() => null),
+      requestJSON(`https://air-quality-api.open-meteo.com/v1/air-quality?${airParameters}`, controller).catch(() => null)
     ]);
     if (!payload.current || !Array.isArray(payload.hourly?.time) || !payload.hourly.time.length || !Array.isArray(payload.daily?.time) || !payload.daily.time.length) throw new Error('The forecast response was incomplete.');
-    mergeByTime(payload.hourly, aux?.hourly); mergeByTime(payload.daily, aux?.daily);
+    mergeByTime(payload.hourly, aux?.hourly); mergeByTime(payload.daily, aux?.daily); mergeByTime(payload.hourly, air?.hourly);
     const next = payload.hourly.time.findIndex((time) => time > payload.current.time);
     const nowIndex = next === -1 ? payload.hourly.time.length - 1 : Math.max(0, next - 1);
     payload.wapk = window.WapkWeatherLogic?.classifyForecast(payload, nowIndex) || null;
