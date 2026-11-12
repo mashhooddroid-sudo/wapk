@@ -8,8 +8,10 @@
 # Needs two repository secrets (Settings → Secrets and variables → Actions):
 #   CLOUDFLARE_API_TOKEN  – a Cloudflare API token with "Cloudflare Pages: Edit" permission
 #   CLOUDFLARE_ACCOUNT_ID – e35f62e834050b6f12e9103657ebcb53 (Mashhood.droid@gmail.com's Account)
-# and, for the written 7-day outlook (outlook.json; without it only its tables are published):
+# The written 7-day outlook (outlook.json) uses Cloudflare Workers AI through the same token, which then also
+# needs the "Workers AI" permission; or Claude instead when this optional secret is set:
 #   ANTHROPIC_API_KEY     – a Claude API key
+# Without either, only the outlook's tables are published.
 name: Forecast map data
 
 on:
@@ -68,6 +70,10 @@ jobs:
         timeout-minutes: 15
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Without a Claude key the text is written by Cloudflare Workers AI (free tier); the Cloudflare token
+          # then also needs the "Workers AI" permission.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npm ci --prefix pipeline/outlook --no-audit --no-fund
           node pipeline/outlook/build_outlook.mjs forecast-out

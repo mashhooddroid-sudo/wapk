@@ -1,12 +1,14 @@
 // WAPK 7-day outlook: the forecast for about 40 places across Pakistan, classified with the site's own rules
 // (weather-logic.js: storms, hail, fog, snow below 0.5 °C, sleet 0.5–3 °C, rain above 3 °C), the snowline and
-// the daily numbers, then written up in English and Urdu by Claude. The numbers in the tables come from the
-// data, never from the model; the model only writes the text, from the same numbers.
+// the daily numbers, then written up in English and Urdu by an AI model. The numbers in the tables come from
+// the data, never from the model; the model only writes the text, from the same numbers.
 //
 //   node build_outlook.mjs <out-dir> [--no-ai]
 //
-// Writes <out-dir>/outlook.json. Needs ANTHROPIC_API_KEY for the written text; without it (or with --no-ai)
-// the file has the tables only and the site shows them without the text.
+// Writes <out-dir>/outlook.json. The text is written by Claude when ANTHROPIC_API_KEY is set, otherwise by
+// Cloudflare Workers AI (free tier) with CLOUDFLARE_API_TOKEN (needs the "Workers AI" permission) and
+// CLOUDFLARE_ACCOUNT_ID. OUTLOOK_AI_URL points the Workers AI calls at a local test proxy instead. Without
+// any of these (or with --no-ai) the file has the tables only and the site shows them without the text.
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -15,8 +17,15 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outDir = process.argv[2] || ".";
-const useAi = !process.argv.includes("--no-ai") && Boolean(process.env.ANTHROPIC_API_KEY);
+const noAi = process.argv.includes("--no-ai");
 const MODEL = "claude-opus-5-5";
+const CF_MODEL = process.env.OUTLOOK_AI_MODEL || "@cf/openai/gpt-oss-120b";
+const CF_URL = process.env.OUTLOOK_AI_URL
+  || (process.env.CLOUDFLARE_ACCOUNT_ID ? `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/ai/run/` : null);
+const writerKind = noAi ? null
+  : process.env.ANTHROPIC_API_KEY ? "claude"
+  : process.env.OUTLOOK_AI_URL || (CF_URL && process.env.CLOUDFLARE_API_TOKEN) ? "workers-ai"
+  : null;
 const TIMEZONE = "Asia/Karachi";
 const DAYS = 7;
 
@@ -227,6 +236,110 @@ async function writeOutlook(data) {
   return { outlook: JSON.parse(text), model: message.model, usage: message.usage };
 }
 
+// ── The written outlook (Cloudflare Workers AI) ─────────────────────────────
+// Open models do better with two plain steps: write the outlook in English from compact data, then translate
+// it to Urdu. The two answers are joined into the same { en, ur } shape as Claude's.
+const EN_SHAPE = '{"headline": string, "overview": string, "days": [{"date": "YYYY-MM-DD", "title": string, "text": string}], "regions": [{"id": string, "text": string}], "snow": string, "advisories": [string]}';
+
+// The forecast as short text lines, day by day and region by region (far fewer tokens than JSON, and laid out
+// the way the outlook is written), with each date's weekday given so the model never has to work it out.
+const weekday = (date) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+
+function compactData(data) {
+  const dates = data.places[0].days.map((day) => day.date);
+  const lines = [`Today is ${weekday(data.today)} (${data.today}).`];
+  dates.forEach((date, dayIndex) => {
+    const snow = data.snowline.find((row) => row.date === date);
+    lines.push("", `=== ${weekday(date)} (${date}) === snowline: ${snow?.metres ? `${snow.metres} m (lowest ${snow.lowestMetres} m at ${snow.lowestAt})` : "none (no precipitation on high ground)"}`);
+    for (const region of data.regions) {
+      const entries = data.places.filter((place) => place.region === region.id).map((place) => {
+        const day = place.days[dayIndex];
+        const parts = [`${place.name} (${place.elevation} m): ${day.weather}${day.hail ? " WITH HAIL" : ""}, ${day.max}/${day.min}°C`];
+        if (day.rainMm >= 0.5) parts.push(`rain ${day.rainMm} mm`);
+        if (day.sleetMm >= 0.5) parts.push(`sleet ${day.sleetMm} mm`);
+        if (day.snowCm >= 0.5) parts.push(`snow ${day.snowCm} cm`);
+        if (day.stormHours) parts.push(`thunderstorm ${day.stormHours} h`);
+        if (day.gustKmh >= 50) parts.push(`gusts ${day.gustKmh} km/h`);
+        if (day.wet.length) parts.push(`wet in the ${day.wet.join(", ")}`);
+        return parts.join(", ");
+      });
+      lines.push(`[${region.id}] ${region.en}: ${entries.join("; ")}`);
+    }
+  });
+  return lines.join("\n");
+}
+
+// Weather words in Urdu, so the translation uses the usual terms.
+const URDU_GLOSSARY = "rain = بارش, light rain = ہلکی بارش, heavy rain = موسلا دھار بارش, drizzle = بوندا باندی, showers = بارش کی بوچھاڑ, snow = برف باری, snowfall = برف باری, sleet = برف آمیز بارش, hail = ژالہ باری, thunderstorm = گرج چمک کے ساتھ بارش, lightning = آسمانی بجلی, fog = دھند, mist = کہر, frost = کہرا, cloudy = ابر آلود, partly cloudy = جزوی ابر آلود, clear = صاف, sunny = دھوپ, wind gusts = تیز ہوائیں, snowline = برف کی حد, landslide = لینڈ سلائیڈنگ, minimum temperature = کم سے کم درجہ حرارت, maximum temperature = زیادہ سے زیادہ درجہ حرارت";
+
+// The model's reply text, from the shapes Workers AI models answer in.
+function replyText(result) {
+  if (typeof result?.response === "string") return result.response;
+  if (result?.response && typeof result.response === "object") return JSON.stringify(result.response);
+  const choice = result?.choices?.[0]?.message?.content;
+  if (typeof choice === "string") return choice;
+  const output = (result?.output || []).flatMap((item) => item.content || []).filter((part) => part.type === "output_text").map((part) => part.text).join("");
+  if (output) return output;
+  throw new Error("the model gave no text");
+}
+
+function parseJson(text) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("the reply had no JSON");
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+async function runWorkersAi(system, user) {
+  const local = Boolean(process.env.OUTLOOK_AI_URL);
+  const headers = { "Content-Type": "application/json" };
+  if (!local) headers.Authorization = `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`;
+  const body = { messages: [{ role: "system", content: system }, { role: "user", content: user }], max_tokens: 12000, temperature: 0.3 };
+  if (local) body.model = CF_MODEL;
+  const response = await fetch(local ? CF_URL : `${CF_URL}${CF_MODEL}`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(300_000) });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.success) throw new Error(`Workers AI ${response.status}: ${payload?.errors?.map((error) => error.message).join("; ") || "no answer"}`);
+  return replyText(payload.result);
+}
+
+async function workersAiJson(system, user) {
+  let lastError;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return parseJson(await runWorkersAi(system, user));
+    } catch (error) {
+      lastError = error;
+      console.error(`Workers AI attempt ${attempt} failed: ${error.message}`);
+    }
+  }
+  throw lastError;
+}
+
+async function writeOutlookWorkersAi(data) {
+  const englishOnly = SYSTEM.split("\n\n").filter((paragraph) => !paragraph.startsWith("Write every text twice")).join("\n\n");
+  const english = await workersAiJson(
+    `${englishOnly}\n\nThe data lists each day (with its weekday, which you must use exactly as given) and, inside it, every region in [brackets] with its places. For each day, mention every place with heavy rain, thunderstorm, hail, snow or sleet; never call a place dry when the data gives it rain that day.\n\nAnswer with JSON only, no other text, in exactly this shape (English): ${EN_SHAPE}. "regions" has one entry for each region id in [brackets], "days" one entry for each date, and each day's "title" is a short summary of that day's weather (without the date).`,
+    `Forecast data:\n${compactData(data)}\n\nWrite the 7-day outlook as JSON.`,
+  );
+  const names = [...data.places.map((place) => `${place.name} = ${place.ur}`), ...data.regions.map((region) => `${region.en} = ${region.ur}`)].join(", ");
+  const urdu = await workersAiJson(
+    `You translate weather forecasts from English into natural, fluent Urdu in Urdu script (never Roman Urdu), keeping every fact and number exactly. Use these weather terms: ${URDU_GLOSSARY}. Use these Urdu place names: ${names}. Answer with JSON only: the same shape and keys as the input, with every "date" and "id" value unchanged and every other text translated.`,
+    JSON.stringify(english),
+  );
+  const pair = (en, ur) => ({ en: String(en ?? ""), ur: String(ur ?? en ?? "") });
+  return {
+    headline: pair(english.headline, urdu.headline),
+    overview: pair(english.overview, urdu.overview),
+    days: (english.days || []).map((day, index) => ({ date: day.date, title: pair(day.title, urdu.days?.[index]?.title), text: pair(day.text, urdu.days?.[index]?.text) })),
+    regions: (english.regions || []).filter((region) => data.regions.some((item) => item.id === region.id)).map((region) => ({
+      id: region.id,
+      text: pair(region.text, urdu.regions?.find((item) => item.id === region.id)?.text),
+    })),
+    snow: pair(english.snow, urdu.snow),
+    advisories: (english.advisories || []).map((item, index) => pair(item, urdu.advisories?.[index])),
+  };
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 const payloads = await fetchForecasts();
 const places = PLACES.map((place, index) => ({ ...place, elevation: round(payloads[index].elevation), days: summarise(place, payloads[index]) }));
@@ -241,17 +354,26 @@ const result = {
   text: null,
 };
 
-if (useAi) {
+const data = { regions: REGIONS, places, snowline, today: places[0].days[0].date };
+if (writerKind === "claude") {
   try {
-    const { outlook, model, usage } = await writeOutlook({ regions: REGIONS, places, snowline, today: places[0].days[0].date });
+    const { outlook, model, usage } = await writeOutlook(data);
     result.text = outlook;
     result.writer = { model, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens };
   } catch (error) {
     if (error instanceof Anthropic.APIError) console.error(`Claude API error ${error.status}: ${error.message}`);
     else console.error(`The written outlook failed: ${error instanceof Error ? error.message : error}`);
   }
+} else if (writerKind === "workers-ai") {
+  try {
+    const started = Date.now();
+    result.text = await writeOutlookWorkersAi(data);
+    result.writer = { model: CF_MODEL, seconds: Math.round((Date.now() - started) / 1000) };
+  } catch (error) {
+    console.error(`The written outlook failed: ${error instanceof Error ? error.message : error}`);
+  }
 } else {
-  console.log("No ANTHROPIC_API_KEY (or --no-ai): writing the tables only.");
+  console.log("No AI writer configured (or --no-ai): writing the tables only.");
 }
 
 fs.mkdirSync(outDir, { recursive: true });
