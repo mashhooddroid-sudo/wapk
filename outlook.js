@@ -26,8 +26,8 @@
   const t = (pair) => (pair ? pair[state.lang] || pair.en || '' : '');
   const ur = () => state.lang === 'ur';
   const LABELS = {
-    en: { overview: 'Overview', advisories: 'Advisories', days: 'Day by day', snow: 'Snowline', regions: 'Regions', places: 'Places', snowline: 'Snowline', lowest: 'Lowest', date: 'Day', none: 'No snow expected', pending: 'The written outlook is being prepared. The tables below are from the latest forecast.', failed: 'The outlook could not load. Check your connection and try again.', written: 'Written by AI from WAPK forecast data', source: 'ECMWF IFS, WAPK weather rules', rain: 'rain', snowCm: 'snow' },
-    ur: { overview: 'خلاصہ', advisories: 'انتباہ', days: 'روزانہ موسم', snow: 'برف باری کی حد', regions: 'علاقے', places: 'شہر', snowline: 'برف کی حد', lowest: 'کم ترین', date: 'دن', none: 'برف باری متوقع نہیں', pending: 'تحریری پیش گوئی تیار کی جا رہی ہے۔ نیچے دی گئی جدولیں تازہ ترین پیش گوئی سے ہیں۔', failed: 'پیش گوئی لوڈ نہیں ہو سکی۔ کنکشن چیک کر کے دوبارہ کوشش کریں۔', written: 'WAPK کے موسمی ڈیٹا سے AI کی تحریر', source: 'ECMWF IFS، WAPK موسمی قواعد', rain: 'بارش', snowCm: 'برف' },
+    en: { overview: 'Overview', advisories: 'Advisories', days: 'Day by day', snow: 'Snowline', regions: 'Regions', places: 'Places', snowline: 'Snowline', lowest: 'Lowest', date: 'Day', none: 'No snow expected', pending: 'The written outlook is being prepared. The tables below are from the latest forecast.', failed: 'The outlook could not load. Check your connection and try again.', notReady: 'The 7-day outlook is not ready yet. It appears here after the next forecast update.', written: 'Written by AI from WAPK forecast data', source: 'ECMWF IFS, WAPK weather rules', rain: 'rain', snowCm: 'snow' },
+    ur: { overview: 'خلاصہ', advisories: 'انتباہ', days: 'روزانہ موسم', snow: 'برف باری کی حد', regions: 'علاقے', places: 'شہر', snowline: 'برف کی حد', lowest: 'کم ترین', date: 'دن', none: 'برف باری متوقع نہیں', pending: 'تحریری پیش گوئی تیار کی جا رہی ہے۔ نیچے دی گئی جدولیں تازہ ترین پیش گوئی سے ہیں۔', failed: 'پیش گوئی لوڈ نہیں ہو سکی۔ کنکشن چیک کر کے دوبارہ کوشش کریں۔', notReady: 'ہفتہ وار پیش گوئی ابھی تیار نہیں۔ اگلی موسمی اپ ڈیٹ کے بعد یہاں دکھائی دے گی۔', written: 'WAPK کے موسمی ڈیٹا سے AI کی تحریر', source: 'ECMWF IFS، WAPK موسمی قواعد', rain: 'بارش', snowCm: 'برف' },
   };
   const L = (key) => LABELS[state.lang][key];
 
@@ -40,7 +40,7 @@
     if (!force && state.data && Date.now() - state.loadedAt < REFRESH_MS) return state.data;
     state.loading ||= fetch(DATA_URL, { cache: 'no-cache', signal: AbortSignal.timeout(20_000) })
       .then((response) => {
-        if (!response.ok) throw new Error(`outlook returned ${response.status}`);
+        if (!response.ok) throw Object.assign(new Error(`outlook returned ${response.status}`), { notReady: response.status === 404 });
         return response.json();
       })
       .then((data) => {
@@ -190,8 +190,8 @@
     try {
       await load(false);
       render();
-    } catch {
-      if (!state.data) root.replaceChildren(el('p', 'outlook-note', L('failed')));
+    } catch (error) {
+      if (!state.data) root.replaceChildren(el('p', 'outlook-note', L(error?.notReady ? 'notReady' : 'failed')));
     }
   }
 
