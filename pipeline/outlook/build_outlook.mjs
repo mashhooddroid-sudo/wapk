@@ -148,6 +148,7 @@ function summarise(place, payload) {
       weather: NAMES[day.code] || "—",
       code: day.code ?? null,
       hail: Boolean(day.hail),
+      graupel: Boolean(day.graupel),
       max: round(daily.temperature_2m_max[dayIndex]),
       min: round(daily.temperature_2m_min[dayIndex]),
       rainMm: round(rain, 1),
@@ -216,7 +217,7 @@ const SYSTEM = `You are the duty forecaster for WAPK (Weather Alert PK), writing
 
 You receive the forecast as data: for each place and day, the headline weather from WAPK's own rules, min/max temperature (°C), rain, sleet and snow amounts, the strongest gust, hours of thunderstorm, a hail flag and which parts of the day are wet; plus the daily snowline. Write only what the data supports. Never invent numbers, places or events, and quote figures as they are given (round sensibly, e.g. "about 20 mm", "10–12 °C").
 
-WAPK's rules, which the data already follows: snow falls below 0.5 °C, sleet (rain and snow mixed) between 0.5 and 3 °C, rain above 3 °C. A thunderstorm appears only where WAPK's storm rule fires (stormHours > 0 or a thunderstorm headline); do not add thunderstorms the data does not show. Hail is possible only where the hail flag is true.
+WAPK's rules, which the data already follows: snow falls below 0.5 °C, sleet (rain and snow mixed) between 0.5 and 3 °C, rain above 3 °C. A thunderstorm appears only where WAPK's storm rule fires (stormHours > 0 or a thunderstorm headline); do not add thunderstorms the data does not show. Hail is possible only where the hail flag is true; where "graupel" is also true it is graupel (soft hail, small ice pellets) from ordinary showers on high ground, not thunderstorm hail, so call it graupel or soft hail.
 
 Style: clear, calm and practical, for the general public and travellers. Use local time words (night, morning, afternoon, evening) and weekday names. Mention mountain passes, hill stations and road conditions where snow or heavy rain makes them relevant. Keep each day to 2–4 sentences, each region to 2–4 sentences. If a period is dry and settled, say so briefly.
 
@@ -260,7 +261,7 @@ function compactData(data) {
     for (const region of data.regions) {
       const entries = data.places.filter((place) => place.region === region.id).map((place) => {
         const day = place.days[dayIndex];
-        const parts = [`${place.name} (${place.elevation} m): ${day.weather}${day.hail ? " WITH HAIL" : ""}, ${day.max}/${day.min}°C`];
+        const parts = [`${place.name} (${place.elevation} m): ${day.weather}${day.hail ? (day.graupel ? " WITH GRAUPEL (SOFT HAIL) IN SHOWERS" : " WITH HAIL") : ""}, ${day.max}/${day.min}°C`];
         if (day.rainMm >= 0.5) parts.push(`rain ${day.rainMm} mm`);
         if (day.sleetMm >= 0.5) parts.push(`sleet ${day.sleetMm} mm`);
         if (day.snowCm >= 0.5) parts.push(`snow ${day.snowCm} cm`);
@@ -276,7 +277,7 @@ function compactData(data) {
 }
 
 // Weather words in Urdu, so the translation uses the usual terms.
-const URDU_GLOSSARY = "rain = بارش, light rain = ہلکی بارش, heavy rain = موسلا دھار بارش, drizzle = بوندا باندی, showers = بارش کی بوچھاڑ, snow = برف باری, snowfall = برف باری, sleet = برف آمیز بارش, hail = ژالہ باری, thunderstorm = گرج چمک کے ساتھ بارش, lightning = آسمانی بجلی, fog = دھند, mist = کہر, frost = کہرا, cloudy = ابر آلود, partly cloudy = جزوی ابر آلود, clear = صاف, sunny = دھوپ, wind gusts = تیز ہوائیں, snowline = برف کی حد, landslide = لینڈ سلائیڈنگ, minimum temperature = کم سے کم درجہ حرارت, maximum temperature = زیادہ سے زیادہ درجہ حرارت";
+const URDU_GLOSSARY = "rain = بارش, light rain = ہلکی بارش, heavy rain = موسلا دھار بارش, drizzle = بوندا باندی, showers = بارش کی بوچھاڑ, snow = برف باری, snowfall = برف باری, sleet = برف آمیز بارش, hail = ژالہ باری, graupel = ہلکی ژالہ باری, thunderstorm = گرج چمک کے ساتھ بارش, lightning = آسمانی بجلی, fog = دھند, mist = کہر, frost = کہرا, cloudy = ابر آلود, partly cloudy = جزوی ابر آلود, clear = صاف, sunny = دھوپ, wind gusts = تیز ہوائیں, snowline = برف کی حد, landslide = لینڈ سلائیڈنگ, minimum temperature = کم سے کم درجہ حرارت, maximum temperature = زیادہ سے زیادہ درجہ حرارت";
 
 // The model's reply text, from the shapes Workers AI models answer in.
 function replyText(result) {

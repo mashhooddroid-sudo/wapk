@@ -161,7 +161,7 @@
         tr.append(name);
         place.days.forEach((day) => {
           const cell = el('td', 'outlook-cell');
-          cell.title = `${day.weather}${day.hail ? ', hail possible' : ''}`;
+          cell.title = `${day.weather}${day.hail ? (day.graupel ? ', graupel (soft hail) possible' : ', hail possible') : ''}`;
           const icon = el('span', 'outlook-icon');
           icon.innerHTML = window.AtmosIcons?.weather(day.code ?? 3, true, day.hail) || '';
           const temps = el('span', 'outlook-temps');

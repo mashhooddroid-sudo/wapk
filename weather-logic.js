@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  // Thunderstorm and hail classification, ported from the Weather & Prayer Alert PK app
+  // Thunderstorm, hail and graupel classification, ported from the Weather & Prayer Alert PK app
   // (lib/services/weather_controller.dart, documented in its WEATHER_LOGIC.md). Thresholds are the app's,
   // fitted to Pakistan stations and three confirmed hail events in Sep 2026, so keep them in step with it.
   // Fog (classifyFog) is the site's own since Nov 2026; the app still uses visibility alone.
@@ -101,6 +101,18 @@
     const warmLayerM = freezingLevelM - (elevationM ?? 0);
     const shearKt = (wind500Kmh ?? 0) / 1.852;
     return warmLayerM <= 4200 && t500C <= -4 && shearKt >= 17;
+  }
+
+  // Cold-season graupel (soft hail) from ordinary showers on high ground: a second path to the hail flag that
+  // needs no storm, CAPE or shear, ported from the app (graupelReachesGround). Galiyat and Murree were carpeted
+  // in graupel on 24 Oct 2026 while ECMWF called it drizzle (max 0.7 mm/h, CAPE under 530, shear under 5 kt);
+  // the warm layer was 1292 m and T500 −16.8 °C. A 2 m temperature of 3 °C or more separates graupel from plain
+  // snow. Only above 1500 m: the cold profile it needs does not occur lower in Pakistan.
+  function graupelReachesGround(freezingLevelM, t500C, t2mC, precipMm, elevationM) {
+    const elevation = elevationM ?? 0;
+    if (elevation < 1500 || freezingLevelM === null || t500C === null || t2mC === null) return false;
+    if ((precipMm ?? 0) < 0.3) return false;
+    return freezingLevelM - elevation <= 2000 && t500C <= -12 && t2mC >= 3;
   }
 
   // Fog and mist, only where the hour is otherwise clear or cloudy (rain, snow and storms always win).
@@ -260,10 +272,13 @@
   function classifyHour(fields, ctx, codeOverride) {
     let code = fixPrecipTypeForTemp(codeOverride ?? fields.code, fields.temp);
     code = refineThunderstorm(code, fields);
-    const hail = isStormCode(code) && hailReachesGround(fields.freeze, fields.t500, fields.wind500, ctx.elevation);
+    const stormHail = isStormCode(code) && hailReachesGround(fields.freeze, fields.t500, fields.wind500, ctx.elevation);
+    // graupel: true when the hail flag comes only from the graupel path (showers, not a storm).
+    const graupel = !stormHail && graupelReachesGround(fields.freeze, fields.t500, fields.temp, fields.mm, ctx.elevation);
+    const hail = stormHail || graupel;
     if ((fields.cloud ?? 0) >= 90 && (code === 1 || code === 2)) code = 3;
     code = classifyFog(code, fields, ctx);
-    return { code, hail, intensity: capeIntensity(code, fields.cape) };
+    return { code, hail, graupel, intensity: capeIntensity(code, fields.cape) };
   }
 
   const isFogCode = (code) => code >= 45 && code <= 48;
@@ -292,6 +307,7 @@
     let upstreamStorm = false;
     let anyStormHour = false;
     let hail = false;
+    let graupelHail = false;
     hourly.time.forEach((time, index) => {
       if (typeof time !== 'string' || time.slice(0, 10) !== date) return;
       const fields = hourFields(hourly, index);
@@ -305,6 +321,7 @@
         anyStormHour = true;
         if (hailReachesGround(fields.freeze, fields.t500, fields.wind500, ctx.elevation)) hail = true;
       }
+      if (graupelReachesGround(fields.freeze, fields.t500, fields.temp, fields.mm, ctx.elevation)) graupelHail = true;
       if (fields.cape !== null && (maxCape === null || fields.cape > maxCape)) maxCape = fields.cape;
       precipSum += fields.mm ?? 0;
       maxProb = Math.max(maxProb, fields.pp);
@@ -342,7 +359,8 @@
       nightCode: nightCodes.length ? fogHeadline(headline(nightCodes, nightCloud), nightFog, 2) : null,
       intensity: capeIntensity(code, maxCape),
       maxCape,
-      hail,
+      hail: hail || graupelHail,
+      graupel: graupelHail && !hail,
     };
   }
 

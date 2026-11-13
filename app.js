@@ -335,9 +335,9 @@
     const high = dailyValue('temperature_2m_max');
     const low = dailyValue('temperature_2m_min');
     const summary = conditions.condition === 'Clear night' ? 'Clear skies' : conditions.condition;
-    if (conditions.hail) return 'Thunderstorms with possible hail around. Keep an eye on local weather advisories.';
+    if (conditions.hail) return conditions.graupel ? 'Showers with possible graupel (soft hail) around. Roads on high ground may turn slippery.' : 'Thunderstorms with possible hail around. Keep an eye on local weather advisories.';
     if (conditions.weatherCode >= 95) return 'Thunderstorms around. Keep an eye on local weather advisories.';
-    if (dayInfo(0)?.hail) return `${summary} now, but thunderstorms with possible hail are expected later today.`;
+    if (dayInfo(0)?.hail) return `${summary} now, but ${dayInfo(0).graupel ? 'showers with possible graupel (soft hail)' : 'thunderstorms with possible hail'} are expected later today.`;
     if (finite(chance) && chance >= 50) return `Rain may be part of your plans: up to ${Math.round(chance)}% chance in the next 6 hours.`;
     if (finite(high) && finite(low)) return `${summary} ${conditions.isDay ? 'today' : 'tonight'}, with a high of ${temperature(high)} and a low of ${temperature(low)}. ${chance === 0 ? 'No rain forecast in the next 6 hours.' : 'Your next 24 hours are just below.'}`;
     return `${summary}. Explore the hourly outlook for the day ahead.`;
@@ -495,7 +495,7 @@
     if (info?.dayCode !== null && info?.dayCode !== undefined) entries.push(['Day', condition(info.dayCode)]);
     if (info?.nightCode !== null && info?.nightCode !== undefined) entries.push(['Night', condition(info.nightCode)]);
     if (info?.intensity) entries.push(['Storm energy', `${INTENSITY[info.intensity]} \u00b7 CAPE ${number(Math.round(info.maxCape))}`]);
-    if (info?.hail) entries.push(['Hail', 'Possible in storms']);
+    if (info?.hail) entries.push(['Hail', info.graupel ? 'Graupel (soft hail) possible in showers' : 'Possible in storms']);
     entries.forEach(([label, value]) => { const stat = element('div', 'day-detail-stat'); stat.append(element('span', '', label), element('strong', '', value)); grid.append(stat); });
     byId('dayDetails').replaceChildren(title, grid);
   }
@@ -710,7 +710,7 @@
     const model = state.weather.current;
     const conditions = {
       source: null, temperature: model.temperature_2m, apparent: model.apparent_temperature,
-      weatherCode: state.weather.wapk?.current.code ?? model.weather_code, hail: Boolean(state.weather.wapk?.current.hail),
+      weatherCode: state.weather.wapk?.current.code ?? model.weather_code, hail: Boolean(state.weather.wapk?.current.hail), graupel: Boolean(state.weather.wapk?.current.graupel),
       isDay: Boolean(model.is_day), humidity: model.relative_humidity_2m, dewPoint: hourlyValue('dew_point_2m'),
       windSpeed: model.wind_speed_10m, windDirection: model.wind_direction_10m, windVariable: false, windGusts: model.wind_gusts_10m,
       visibility: hourlyValue('visibility'), visibilityAtLeast: false, pressure: model.surface_pressure
@@ -734,7 +734,9 @@
       visibilityAtLeast: finite(metar.visibility_km) && metar.visibility_km >= 9.6,
       pressure: use(metar.pressure_hpa, conditions.pressure),
       weatherCode: metarWeatherCode(metar),
-      hail: metarCodes(metar).some((code) => /GR|GS/.test(code))
+      hail: metarCodes(metar).some((code) => /GR|GS/.test(code)),
+      // GS is small hail or snow pellets (graupel); GR is hail.
+      graupel: metarCodes(metar).some((code) => /GS/.test(code)) && !metarCodes(metar).some((code) => /GR/.test(code))
     });
     conditions.apparent = use(apparentTemperature(conditions.temperature, conditions.humidity, conditions.windSpeed), conditions.apparent);
     conditions.condition = metarCondition(metar, conditions.isDay);
